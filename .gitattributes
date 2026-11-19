@@ -1,0 +1,18 @@
+# 换行符必须钉死，否则「在我机器上能构建」会变成一场事故。
+#
+# sh 脚本带 CRLF 时的报错是 `exec /app/scripts/docker-entrypoint.sh: no such file
+# or directory` 或 `: not found`——错误信息完全不提换行符，排查会绕很久。
+# Windows 上 core.autocrlf=true 是默认值，不写这几行早晚踩到。
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+.makefile text eol=lf
+Makefile text eol=lf
+check.cmd text eol=crlf
+
+# 二进制/产物不参与换行转换
+*.png binary
+*.sqlite3 binary

@@ -1,0 +1,21 @@
+{
+  "_comment": "质量门禁阈值。改这里等于改对外的质量承诺，必须在 README 同步说明。",
+  "_scope": "hard 段全部为硬门禁，任一不过则 check 非零退出。",
+  "hard": {
+    "f1_drop_max": 0.02,
+    "precision_drop_max": 0.05,
+    "recall_drop_max": 0.05,
+    "parse_failure_rate_max": 0.02,
+    "calls_per_review_max": 1.2,
+    "tokens_per_review_max": 600,
+    "latency_p95_ms_max_live": 3000,
+    "latency_p95_drift_factor_max": 3.0
+  },
+  "_notes": {
+    "f1_drop_max": "0.02 = 2 个点。低于此值的波动视为噪声，不做拦截。",
+    "calls_per_review_max": "1.2 意味着允许 20% 样本走一次修复轮；超过说明契约或 prompt 退化。",
+    "tokens_per_review_max": "单条评论的 token 预算，防止 prompt 无序膨胀导致成本翻倍。",
+    "latency_p95_ms_max_live": "仅 live 模式生效的绝对 SLA。mock 模式延迟只来自模拟 sleep，无业务含义。",
+    "latency_p95_drift_factor_max": "mock/live 都生效的相对护栏，防止改动引入数量级退化。"
+  }
+}

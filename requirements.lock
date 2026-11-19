@@ -1,0 +1,32 @@
+# 运行期依赖的精确版本（镜像装这一份，不装 requirements.txt 的区间）。
+#
+# 为什么需要两份：
+#   requirements.txt 写区间，是为了本地开发能拿到补丁版本；
+#   镜像必须精确，否则「今天构建通过、下周构建失败」或者更糟——
+#   悄悄换了一个版本，指标没变但行为变了，没人知道该怀疑谁。
+#
+# 生成方式（在已验证过的 .venv 里）：
+#   .venv/Scripts/python.exe -m pip freeze | grep -v -E '^(pytest|pluggy|iniconfig|packaging|Pygments)=='
+#
+# 这份清单与 tests/baseline.json 的指标是同一次环境产出的，
+# 换版本后必须重跑 make check 再决定是否 --update-baseline。
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+certifi==2026.10.23
+click==8.5.1
+colorama==0.4.6
+fastapi==0.163.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+numpy==2.5.5
+opentelemetry-api==1.45.2
+pydantic==2.14.3
+pydantic_core==2.50.4
+python-dotenv==1.2.4
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+uvicorn==0.54.0

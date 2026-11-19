@@ -1,0 +1,120 @@
+{"label": "charging_speed", "a_idx": 0, "b_idx": 1, "a": "Takes forever to charge my phone.", "b": "charges fast", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 2, "a": "Takes forever to charge my phone.", "b": "充电太慢了，一小时才充了百分之二十，还不如插线。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 3, "a": "Takes forever to charge my phone.", "b": "充电速度快", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 4, "a": "Takes forever to charge my phone.", "b": "充电慢", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 5, "a": "Takes forever to charge my phone.", "b": "it charged maybe five percent in half an hour", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 6, "a": "Takes forever to charge my phone.", "b": "没有宣传里说的那么快", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 7, "a": "Takes forever to charge my phone.", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 0, "b_idx": 8, "a": "Takes forever to charge my phone.", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 2, "a": "charges fast", "b": "充电太慢了，一小时才充了百分之二十，还不如插线。", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 3, "a": "charges fast", "b": "充电速度快", "a_polarity": "positive", "b_polarity": "positive", "same": true}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 4, "a": "charges fast", "b": "充电慢", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 5, "a": "charges fast", "b": "it charged maybe five percent in half an hour", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 6, "a": "charges fast", "b": "没有宣传里说的那么快", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 7, "a": "charges fast", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 1, "b_idx": 8, "a": "charges fast", "b": "fast charging", "a_polarity": "positive", "b_polarity": "positive", "same": true}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 3, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "充电速度快", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 4, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "充电慢", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 5, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "it charged maybe five percent in half an hour", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 6, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "没有宣传里说的那么快", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 7, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 2, "b_idx": 8, "a": "充电太慢了，一小时才充了百分之二十，还不如插线。", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 3, "b_idx": 4, "a": "充电速度快", "b": "充电慢", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 3, "b_idx": 5, "a": "充电速度快", "b": "it charged maybe five percent in half an hour", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 3, "b_idx": 6, "a": "充电速度快", "b": "没有宣传里说的那么快", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 3, "b_idx": 7, "a": "充电速度快", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "charging_speed", "a_idx": 3, "b_idx": 8, "a": "充电速度快", "b": "fast charging", "a_polarity": "positive", "b_polarity": "positive", "same": true}
+{"label": "charging_speed", "a_idx": 4, "b_idx": 5, "a": "充电慢", "b": "it charged maybe five percent in half an hour", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 4, "b_idx": 6, "a": "充电慢", "b": "没有宣传里说的那么快", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 4, "b_idx": 7, "a": "充电慢", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 4, "b_idx": 8, "a": "充电慢", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 5, "b_idx": 6, "a": "it charged maybe five percent in half an hour", "b": "没有宣传里说的那么快", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 5, "b_idx": 7, "a": "it charged maybe five percent in half an hour", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 5, "b_idx": 8, "a": "it charged maybe five percent in half an hour", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 6, "b_idx": 7, "a": "没有宣传里说的那么快", "b": "Slow charging speed, takes about three hours for a full charge from empty.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "charging_speed", "a_idx": 6, "b_idx": 8, "a": "没有宣传里说的那么快", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "charging_speed", "a_idx": 7, "b_idx": 8, "a": "Slow charging speed, takes about three hours for a full charge from empty.", "b": "fast charging", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "heat", "a_idx": 0, "b_idx": 1, "a": "After twenty minutes the pad is hot to the touch.", "b": "stays cool", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "heat", "a_idx": 0, "b_idx": 2, "a": "After twenty minutes the pad is hot to the touch.", "b": "Gets warm during charging, not hot, but enough that I notice it on the desk.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "heat", "a_idx": 0, "b_idx": 3, "a": "After twenty minutes the pad is hot to the touch.", "b": "用一会就烫得不行，然后自动断开充电", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "heat", "a_idx": 0, "b_idx": 4, "a": "After twenty minutes the pad is hot to the touch.", "b": "还发热，手机摸上去烫手", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "heat", "a_idx": 1, "b_idx": 2, "a": "stays cool", "b": "Gets warm during charging, not hot, but enough that I notice it on the desk.", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "heat", "a_idx": 1, "b_idx": 3, "a": "stays cool", "b": "用一会就烫得不行，然后自动断开充电", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "heat", "a_idx": 1, "b_idx": 4, "a": "stays cool", "b": "还发热，手机摸上去烫手", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "heat", "a_idx": 2, "b_idx": 3, "a": "Gets warm during charging, not hot, but enough that I notice it on the desk.", "b": "用一会就烫得不行，然后自动断开充电", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "heat", "a_idx": 2, "b_idx": 4, "a": "Gets warm during charging, not hot, but enough that I notice it on the desk.", "b": "还发热，手机摸上去烫手", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "heat", "a_idx": 3, "b_idx": 4, "a": "用一会就烫得不行，然后自动断开充电", "b": "还发热，手机摸上去烫手", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "compatibility", "a_idx": 0, "b_idx": 1, "a": "Does not work with my iPhone in a case.", "b": "Works well with my Galaxy", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "compatibility", "a_idx": 0, "b_idx": 2, "a": "Does not work with my iPhone in a case.", "b": "Type C 接口很松，碰一下就断电", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "compatibility", "a_idx": 1, "b_idx": 2, "a": "Works well with my Galaxy", "b": "Type C 接口很松，碰一下就断电", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 0, "b_idx": 1, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "做工也扎实", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "build_quality", "a_idx": 0, "b_idx": 2, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "feels loose inside", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 0, "b_idx": 3, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "Great build quality", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "build_quality", "a_idx": 0, "b_idx": 4, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "做工实在不行", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 0, "b_idx": 5, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "The plastic feels cheap and the lid does not click shut properly.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 0, "b_idx": 6, "a": "Cheap plastic. The cable connector cracked after two weeks of normal use.", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 1, "b_idx": 2, "a": "做工也扎实", "b": "feels loose inside", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 1, "b_idx": 3, "a": "做工也扎实", "b": "Great build quality", "a_polarity": "positive", "b_polarity": "positive", "same": true}
+{"label": "build_quality", "a_idx": 1, "b_idx": 4, "a": "做工也扎实", "b": "做工实在不行", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 1, "b_idx": 5, "a": "做工也扎实", "b": "The plastic feels cheap and the lid does not click shut properly.", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 1, "b_idx": 6, "a": "做工也扎实", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 2, "b_idx": 3, "a": "feels loose inside", "b": "Great build quality", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "build_quality", "a_idx": 2, "b_idx": 4, "a": "feels loose inside", "b": "做工实在不行", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 2, "b_idx": 5, "a": "feels loose inside", "b": "The plastic feels cheap and the lid does not click shut properly.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 2, "b_idx": 6, "a": "feels loose inside", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 3, "b_idx": 4, "a": "Great build quality", "b": "做工实在不行", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 3, "b_idx": 5, "a": "Great build quality", "b": "The plastic feels cheap and the lid does not click shut properly.", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 3, "b_idx": 6, "a": "Great build quality", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "positive", "b_polarity": "negative", "same": false}
+{"label": "build_quality", "a_idx": 4, "b_idx": 5, "a": "做工实在不行", "b": "The plastic feels cheap and the lid does not click shut properly.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 4, "b_idx": 6, "a": "做工实在不行", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "build_quality", "a_idx": 5, "b_idx": 6, "a": "The plastic feels cheap and the lid does not click shut properly.", "b": "做工一般，盖子扣不紧，边缘还有毛刺，摸着扎手。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 0, "b_idx": 1, "a": "There is a constant buzzing noise from the internal fan, very annoying at night.", "b": "The pump is noisy at night", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 0, "b_idx": 2, "a": "There is a constant buzzing noise from the internal fan, very annoying at night.", "b": "Loud buzzing noise", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 0, "b_idx": 3, "a": "There is a constant buzzing noise from the internal fan, very annoying at night.", "b": "有点吵", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 0, "b_idx": 4, "a": "There is a constant buzzing noise from the internal fan, very annoying at night.", "b": "出水也安静", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "noise", "a_idx": 1, "b_idx": 2, "a": "The pump is noisy at night", "b": "Loud buzzing noise", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 1, "b_idx": 3, "a": "The pump is noisy at night", "b": "有点吵", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 1, "b_idx": 4, "a": "The pump is noisy at night", "b": "出水也安静", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "noise", "a_idx": 2, "b_idx": 3, "a": "Loud buzzing noise", "b": "有点吵", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "noise", "a_idx": 2, "b_idx": 4, "a": "Loud buzzing noise", "b": "出水也安静", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "noise", "a_idx": 3, "b_idx": 4, "a": "有点吵", "b": "出水也安静", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "size_fit", "a_idx": 0, "b_idx": 1, "a": "就是比我预期的大一点，占地方", "b": "Too big for my nightstand", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "size_fit", "a_idx": 0, "b_idx": 2, "a": "就是比我预期的大一点，占地方", "b": "Only works if I take my case off, which defeats the whole purpose of a charging pad.", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "size_fit", "a_idx": 0, "b_idx": 3, "a": "就是比我预期的大一点，占地方", "b": "Too small for two cats", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "size_fit", "a_idx": 1, "b_idx": 2, "a": "Too big for my nightstand", "b": "Only works if I take my case off, which defeats the whole purpose of a charging pad.", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "size_fit", "a_idx": 1, "b_idx": 3, "a": "Too big for my nightstand", "b": "Too small for two cats", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "size_fit", "a_idx": 2, "b_idx": 3, "a": "Only works if I take my case off, which defeats the whole purpose of a charging pad.", "b": "Too small for two cats", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "value", "a_idx": 0, "b_idx": 1, "a": "Overpriced for what it is. My old ten watt pad was fine and cost a third.", "b": "价格偏高", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "value", "a_idx": 0, "b_idx": 2, "a": "Overpriced for what it is. My old ten watt pad was fine and cost a third.", "b": "Not worth the price, the filter needs replacing every two weeks and costs as much as the fountain.", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "value", "a_idx": 1, "b_idx": 2, "a": "价格偏高", "b": "Not worth the price, the filter needs replacing every two weeks and costs as much as the fountain.", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 0, "b_idx": 1, "a": "Stopped working after a month, the coil inside failed", "b": "The pump stopped working after three weeks", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 0, "b_idx": 2, "a": "Stopped working after a month, the coil inside failed", "b": "用了两个月泵就不出水了", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 0, "b_idx": 3, "a": "Stopped working after a month, the coil inside failed", "b": "The filter clogs fast", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 0, "b_idx": 4, "a": "Stopped working after a month, the coil inside failed", "b": "Motor died within six weeks", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 1, "b_idx": 2, "a": "The pump stopped working after three weeks", "b": "用了两个月泵就不出水了", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "pump_life", "a_idx": 1, "b_idx": 3, "a": "The pump stopped working after three weeks", "b": "The filter clogs fast", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 1, "b_idx": 4, "a": "The pump stopped working after three weeks", "b": "Motor died within six weeks", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "pump_life", "a_idx": 2, "b_idx": 3, "a": "用了两个月泵就不出水了", "b": "The filter clogs fast", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "pump_life", "a_idx": 2, "b_idx": 4, "a": "用了两个月泵就不出水了", "b": "Motor died within six weeks", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "pump_life", "a_idx": 3, "b_idx": 4, "a": "The filter clogs fast", "b": "Motor died within six weeks", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "leakage", "a_idx": 0, "b_idx": 1, "a": "Leaks from the bottom seam, water everywhere on my floor by morning.", "b": "底部开始漏水", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "leakage", "a_idx": 0, "b_idx": 2, "a": "Leaks from the bottom seam, water everywhere on my floor by morning.", "b": "it overflowed overnight, soaked the carpet", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "leakage", "a_idx": 0, "b_idx": 3, "a": "Leaks from the bottom seam, water everywhere on my floor by morning.", "b": "The tank joint does not seal.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "leakage", "a_idx": 1, "b_idx": 2, "a": "底部开始漏水", "b": "it overflowed overnight, soaked the carpet", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "leakage", "a_idx": 1, "b_idx": 3, "a": "底部开始漏水", "b": "The tank joint does not seal.", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "leakage", "a_idx": 2, "b_idx": 3, "a": "it overflowed overnight, soaked the carpet", "b": "The tank joint does not seal.", "a_polarity": "negative", "b_polarity": "negative", "same": false}
+{"label": "cleaning", "a_idx": 0, "b_idx": 1, "a": "Hard to clean the reservoir", "b": "水箱很难洗，边角容易发霉，每次拆开都要刷半小时。", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 0, "b_idx": 2, "a": "Hard to clean the reservoir", "b": "拆开看里面全是毛絮", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 0, "b_idx": 3, "a": "Hard to clean the reservoir", "b": "cleaning is a bit fiddly though", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 0, "b_idx": 4, "a": "Hard to clean the reservoir", "b": "cleaning it is a real chore every single week", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 0, "b_idx": 5, "a": "Hard to clean the reservoir", "b": "清洗比想象中方便", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "cleaning", "a_idx": 1, "b_idx": 2, "a": "水箱很难洗，边角容易发霉，每次拆开都要刷半小时。", "b": "拆开看里面全是毛絮", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 1, "b_idx": 3, "a": "水箱很难洗，边角容易发霉，每次拆开都要刷半小时。", "b": "cleaning is a bit fiddly though", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 1, "b_idx": 4, "a": "水箱很难洗，边角容易发霉，每次拆开都要刷半小时。", "b": "cleaning it is a real chore every single week", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 1, "b_idx": 5, "a": "水箱很难洗，边角容易发霉，每次拆开都要刷半小时。", "b": "清洗比想象中方便", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "cleaning", "a_idx": 2, "b_idx": 3, "a": "拆开看里面全是毛絮", "b": "cleaning is a bit fiddly though", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 2, "b_idx": 4, "a": "拆开看里面全是毛絮", "b": "cleaning it is a real chore every single week", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 2, "b_idx": 5, "a": "拆开看里面全是毛絮", "b": "清洗比想象中方便", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "cleaning", "a_idx": 3, "b_idx": 4, "a": "cleaning is a bit fiddly though", "b": "cleaning it is a real chore every single week", "a_polarity": "negative", "b_polarity": "negative", "same": true}
+{"label": "cleaning", "a_idx": 3, "b_idx": 5, "a": "cleaning is a bit fiddly though", "b": "清洗比想象中方便", "a_polarity": "negative", "b_polarity": "positive", "same": false}
+{"label": "cleaning", "a_idx": 4, "b_idx": 5, "a": "cleaning it is a real chore every single week", "b": "清洗比想象中方便", "a_polarity": "negative", "b_polarity": "positive", "same": false}

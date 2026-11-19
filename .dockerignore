@@ -1,0 +1,39 @@
+# 构建上下文里不该出现的东西。
+#
+# 少了这个文件，`docker build .` 会把 .venv（几百 MB）、.git、本地数据库、
+# 评测报告全部塞进上下文——构建变慢只是表象，真正的风险是
+# 本地 data/app.sqlite3（含真实密钥哈希与任务数据）被 COPY 进镜像层，
+# 而镜像层是可以被 pull 下来的。
+
+.venv/
+.git/
+.github/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地数据：库文件、WAL、导出
+data/*.sqlite3
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+data/eval/
+
+reports/
+tests/
+
+# 文档与协作文件不进镜像：镜像里多一份 README 没有价值，
+# 而 .workbuddy/ 与 .env 属于工具与本机状态。
+docs/
+.workbuddy/
+.env
+.env.*
+!.env.example
+*.md
+
+# Windows 上编辑可能带进来的垃圾
+Thumbs.db
+desktop.ini
+*.lnk
