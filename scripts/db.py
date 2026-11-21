@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from xborder_insight.db import fba as fba_db  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
+from xborder_insight.domain import profiles  # noqa: E402
 from xborder_insight.domain.package import PackageFacts  # noqa: E402
 from xborder_insight.domain.fba import (  # noqa: E402
     PRICE_BAND_LABELS,
@@ -176,6 +178,121 @@ def _parse_dims(text: str) -> tuple[float, float, float]:
 
 def _fmt_yes_no(value: bool) -> str:
     return "是" if value else "否"
+
+
+def _disp_width(text: str) -> int:
+    """按终端显示宽度数：CJK 全角字符占两格。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _clip(text: str, width: int) -> str:
+    """按显示宽度截断，超出补省略号。列宽兜底，避免长机型名顶开整张表。"""
+    if _disp_width(text) <= width:
+        return text
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        step = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if used + step > width - 1:
+            break
+        out.append(ch)
+        used += step
+    return "".join(out) + "…"
+
+
+def _pad(text: str, width: int) -> str:
+    """按显示宽度左对齐。用 len() 补空格会把含中文的表撑歪。"""
+    clipped = _clip(text, width)
+    return clipped + " " * max(0, width - _disp_width(clipped))
+
+
+def _dump_profile(conn, args) -> int:
+    """按市场典型规格跑一遍：这些品类到底报不报得出价。
+
+    输出的重点是**判定**，不是费用。费用只是副产品：进了标准尺寸才有数，
+    进不了就是「费率未录」，而不是一个偏低的数。
+    """
+    try:
+        reports = profiles.load_reports(args.profile)
+        if args.category:
+            reports = (profiles.find_category(reports, args.category),)
+    except AppError as exc:
+        print(f"[画像无法使用] {exc.code}: {exc.message}")
+        if getattr(exc, "detail", None):
+            print(f"  {exc.detail}")
+        return 1
+
+    ship_date = args.ship_date or date.today()
+    print(f"市场典型规格 → FBA 可报价性　市场={args.market}")
+    print(f"  售价 ${args.price:.2f}　发货日 {ship_date.isoformat()}")
+    print("  规格来源：在售机型的公开包装尺寸与毛重，状态 assumed（非实测）")
+    print("=" * 104)
+    print(
+        _pad("品类", 14) + _pad("机型", 34) + _pad("含锂", 6)
+        + _pad("包装(英寸)", 24) + _pad("实重oz", 9) + _pad("计费oz", 9) + "FBA 费"
+    )
+    print("-" * 104)
+
+    unreachable = 0
+    for report in reports:
+        for variant in report.variants:
+            dims = "×".join(f"{v:g}" for v in variant.spec.dims_in)
+            if variant.fits:
+                try:
+                    _, env = fba_db.envelope_for_package(
+                        conn,
+                        args.market,
+                        variant.as_facts(),
+                        selling_price=args.price,
+                        ship_date=ship_date,
+                    )
+                    fee = f"${env.low_usd:.2f}–${env.high_usd:.2f}"
+                except AppError as exc:
+                    fee = f"[{exc.code}]"
+            else:
+                unreachable += 1
+                fee = "费率未录（超出标准尺寸）"
+            print(
+                _pad(report.spec.label, 14)
+                + _pad(variant.spec.model, 34)
+                + _pad(_fmt_yes_no(variant.spec.has_lithium_battery), 6)
+                + _pad(dims, 24)
+                + _pad(f"{variant.spec.weight_oz:.1f}", 9)
+                + _pad(f"{variant.billable_oz:.1f}", 9)
+                + fee
+            )
+        print()
+
+    print("=" * 96)
+    print("品类判定")
+    print("-" * 96)
+    for report in reports:
+        print(f"  {report.spec.display_name}")
+        print(f"    判定：{report.verdict_label}")
+        for variant in report.variants:
+            print(f"      · {variant.spec.model}：{variant.worst_edge.describe()}")
+            print(f"        来源 {variant.spec.source_url}")
+        if report.battery_divergent:
+            print(
+                "    含锂判定分歧：同品类既有无电池款又有含锂款 → "
+                "费率表不同，不能按品类统一填"
+            )
+        print(f"    下一步：{report.headline()}")
+        print()
+
+    if unreachable:
+        print(
+            f"注意：{unreachable}/{sum(len(r.variants) for r in reports)} 台机型落在标准尺寸之外。"
+        )
+        print(
+            "  大件/超大件费率整段未录（docs/07 H11），超出的商品不是「费用高一点」，"
+            "而是根本给不出报价。"
+        )
+    print(
+        "\n这些结论依赖 assumed 规格，不能当作该 SKU 的事实。"
+        "\n要变成可决策的数，按 docs/07 H2 B 级量一次箱子：长×宽×高（英寸）+ 实重（oz）。"
+    )
+    return 0
 
 
 def _dump_envelope(conn, args) -> int:
@@ -377,6 +494,20 @@ def main(argv: list[str] | None = None) -> int:
     env_parser.add_argument("--max-lb", type=float, default=None,
                             help="裸查询入口：重量上界（lb），不区分尺寸段")
 
+    prof_parser = sub.add_parser(
+        "fba-profile",
+        help="按市场典型规格跑一遍：这些品类到底报不报得出价",
+    )
+    prof_parser.add_argument("--profile", default=None,
+                             help="画像文件，默认 data/profiles/market_typical.json")
+    prof_parser.add_argument("--market", default="US")
+    prof_parser.add_argument("--price", type=float, default=59.99,
+                             help="售价（美元），默认 59.99 落在 $50-100 价格带")
+    prof_parser.add_argument("--ship-date", type=_parse_iso_date, default=None,
+                             help="YYYY-MM-DD，默认今天")
+    prof_parser.add_argument("--category", default=None,
+                             help="只看一个品类，如 robot_vacuum")
+
     reset = sub.add_parser("reset", help="回滚到 0 再升级（清空数据）")
     reset.add_argument("--yes", action="store_true")
 
@@ -414,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
             return _dump_fba(conn, args.market)
         if args.command == "fba-envelope":
             return _dump_envelope(conn, args)
+        if args.command == "fba-profile":
+            return _dump_profile(conn, args)
         if args.command == "up":
             applied = migrate.upgrade(conn, args.target if args.target is not None else migrate.LATEST)
             print(f"已应用 {len(applied)} 个迁移：{applied or '无需变更'}")

@@ -1,0 +1,219 @@
+{
+  "status": "assumed",
+  "captured_at": "2026-11-21",
+  "marketplace": "US",
+  "method": "每个品类取两款在售机型的公开包装规格（package / giftbox / retail box 尺寸与毛重），不取裸机尺寸。含锂判定按产品是否内置锂离子/锂金属/锂聚合物电池。",
+  "never_verified": "这批数是「品类推断单品」的假设，不是任何一个真实 SKU 的实测值。状态永远是 assumed，不得升级为 verified，也不得写入 cost_params。",
+  "categories": [
+    {
+      "key": "air_purifier",
+      "display_name": "空气净化器（桌面 HEPA 款）",
+      "variants": [
+        {
+          "model": "Trumkey M100S 桌面 H13 HEPA",
+          "dims_in": [
+            10.2,
+            10.2,
+            15.4
+          ],
+          "weight_oz": 141.1,
+          "weight_source": "Gross Weight 4 kg（净重 3.2 kg）",
+          "has_lithium_battery": false,
+          "battery_basis": "市电直插，规格书无电池项",
+          "source_url": "https://trumkey.com/portfolio_entries/desktop-air-purifiers",
+          "source_quote": "Package Dimension: 10.2\" x 10.2\" x 15.4\"; Net / Gross Weight: 3.2 / 4 kg"
+        },
+        {
+          "model": "Cobectal ZQA-3000A 桌面",
+          "dims_in": [
+            7.28,
+            14.56,
+            11.22
+          ],
+          "weight_oz": 84.64,
+          "weight_source": "Package weight 5.29 lb",
+          "has_lithium_battery": false,
+          "battery_basis": "DC 12V 适配器供电，规格书无电池项",
+          "source_url": "https://cobectal.com/products/desktop-portable-air-purifier-with-aromatherapy-for-home-office-bedroom",
+          "source_quote": "Package weight 5.29lb; Package dimensions 7.28x14.56x11.22 in"
+        }
+      ],
+      "short_name": "空气净化器"
+    },
+    {
+      "key": "coffee_machine",
+      "display_name": "咖啡机（15 bar 半自动意式）",
+      "variants": [
+        {
+          "model": "15 bar 半自动 1.2 L（共性规格）",
+          "dims_in": [
+            14.17,
+            14.17,
+            7.87
+          ],
+          "weight_oz": 141.1,
+          "weight_source": "Gross Weight 4 kg（净重 3.5 kg）",
+          "has_lithium_battery": false,
+          "battery_basis": "市电直插 1350 W，规格书无电池项",
+          "source_url": "https://www.espressomakerguide.biz/products/15bar-coffee-maker-espresso-maker-semi-automatic-pump.html",
+          "source_quote": "Package Size: 36*36*20cm / 14.17*14.17*7.87inch; Gross Weight: 4kg/8.82 Lb"
+        },
+        {
+          "model": "RibasuBB 半自动意式（1.5 L 水箱）",
+          "dims_in": [
+            12.8,
+            12.4,
+            9.8
+          ],
+          "weight_oz": 137.57,
+          "weight_source": "Gross Weight 3.9 kg（净重 3.2 kg）",
+          "has_lithium_battery": false,
+          "battery_basis": "市电直插 1050 W，规格书无电池项",
+          "source_url": "https://www.amazon.com/RibasuBB-Espresso-Machine-Automatic-Removable/dp/B0DCZHWNDJ",
+          "source_quote": "Gross Weight: 3.9kg/8.6lbs; Package Size: 32.5*31.5*25cm / 12.8*12.4*9.8in"
+        }
+      ],
+      "short_name": "咖啡机"
+    },
+    {
+      "key": "electric_kettle",
+      "display_name": "电热水壶（1.7 L）",
+      "variants": [
+        {
+          "model": "1.7 L 玻璃壶身（带温控）",
+          "dims_in": [
+            9.45,
+            8.27,
+            9.45
+          ],
+          "weight_oz": 70.55,
+          "weight_source": "整箱重量 2.00 kg（装箱数量 1）",
+          "has_lithium_battery": false,
+          "battery_basis": "市电底座供电，规格书无电池项",
+          "source_url": "https://m.sunsky-online.com/zh_CN/p/ASP0003594EU/",
+          "source_quote": "整箱重量 2.00kgs / 4.41lb; 整箱尺寸 24cm * 21cm * 24cm / 9.45inch * 8.27inch * 9.45inch"
+        },
+        {
+          "model": "Smeg KLF03 1.7 L",
+          "dims_in": [
+            10.5,
+            8.75,
+            10
+          ],
+          "weight_oz": 80.0,
+          "weight_source": "Gross weight 5 lbs（净重 4 lbs）",
+          "has_lithium_battery": false,
+          "battery_basis": "市电底座供电，规格书无电池项",
+          "source_url": "https://www.smeg.com/us/products/KLF03EGMUS",
+          "source_quote": "Packaged width 10.5\"; Giftbox depth 8 3/4\"; Packaged height 10\"; Gross weight 5 lbs"
+        }
+      ],
+      "short_name": "电热水壶"
+    },
+    {
+      "key": "pet_fountain",
+      "display_name": "宠物饮水机（自动循环）",
+      "variants": [
+        {
+          "model": "VOOCOO Flow（含备份电池）",
+          "dims_in": [
+            13,
+            6.5,
+            7.875
+          ],
+          "weight_oz": 46.91,
+          "weight_source": "1.33 kg（含包装）",
+          "has_lithium_battery": true,
+          "battery_basis": "内置备份电池支持断电无线运行 48 h，按锂离子/锂聚合物计",
+          "source_url": "https://voocoo.pet/collections/all/products/flow-pet-water-fountain",
+          "source_quote": "Product Dimensions & Weight w/ Packaging 33 X 16.5 X 20 cm (13 X 6-1/2 X 7-7/8 in), 1.33 kg; Built-in back-up battery supports wireless usage for 48 hours"
+        },
+        {
+          "model": "有线款 2.75 L（插电）",
+          "dims_in": [
+            9.1,
+            9.1,
+            7.1
+          ],
+          "weight_oz": 52.8,
+          "weight_source": "Package weight 3.3 lb（产品 2.4 lb）",
+          "has_lithium_battery": false,
+          "battery_basis": "DC 5 V 适配器直供，无电池",
+          "source_url": "https://www.longpethaven.com/pet-water-fountain-93oz-2-75l-automatic-cat-and-dog-water-fountain-water-dispenser-ultra-quite-easy-to-clean-and-assemble",
+          "source_quote": "Package size: 9.1*9.1*7.1inch; Package weight: 3.3lbs; Output: DC5V"
+        }
+      ],
+      "short_name": "宠物饮水机"
+    },
+    {
+      "key": "robot_vacuum",
+      "display_name": "扫地机器人",
+      "variants": [
+        {
+          "model": "入门单机（无集尘基站）",
+          "dims_in": [
+            13.39,
+            5.51,
+            14.92
+          ],
+          "weight_oz": 91.2,
+          "weight_source": "Giftbox Weight 5.70 lbs（整机 4 lbs）",
+          "has_lithium_battery": true,
+          "battery_basis": "2600 mAh Li-ion 可充电池",
+          "source_url": "https://supersonicinc.com/products/robot-vacuum-cleaner",
+          "source_quote": "Giftbox Dimensions 13.39 x 5.51 x 14.92 in; Giftbox Weight 5.70 lbs; 2600mAh Li-ion Rechargeable Battery"
+        },
+        {
+          "model": "EZVIZ RC3（含充电座整箱）",
+          "dims_in": [
+            16.97,
+            15.51,
+            13.66
+          ],
+          "weight_oz": 178.13,
+          "weight_source": "Weight with package 5.05 kg（整机 2.83 kg）",
+          "has_lithium_battery": true,
+          "battery_basis": "Li-ion 2600 mAh",
+          "source_url": "https://acdtech.mu/?p=12836",
+          "source_quote": "Packaging Dimensions 431 x 394 x 347 mm (16.97 x 15.51 x 13.66 inch); Weight (With package) 5.05 kg"
+        }
+      ],
+      "short_name": "扫地机器人"
+    },
+    {
+      "key": "wireless_charger",
+      "display_name": "无线充电器（Qi 15 W 充电板）",
+      "variants": [
+        {
+          "model": "Belkin BoostCharge 15 W（含适配器）",
+          "dims_in": [
+            5,
+            4.2,
+            2
+          ],
+          "weight_oz": 7.52,
+          "weight_source": "Package Weight 0.47 lb",
+          "has_lithium_battery": false,
+          "battery_basis": "充电板本体无电池，随附 USB-C 电源适配器",
+          "source_url": "https://bhphotovideo.com/c/product/1905096-REG/belkin_wia012ttbk_boostcharge_15w_wireless_charging.html",
+          "source_quote": "Package Weight 0.47 lb; Box Dimensions (LxWxH) 5 x 4.2 x 2\""
+        },
+        {
+          "model": "Philips DLP9230NW 三合一 15 W",
+          "dims_in": [
+            8.9,
+            3.9,
+            0.9
+          ],
+          "weight_oz": 5.82,
+          "weight_source": "Gross weight 0.364 lb",
+          "has_lithium_battery": false,
+          "battery_basis": "充电板本体无电池，USB-C 线供电",
+          "source_url": "https://www.documents.philips.com/assets/20231207/4392abc4ce7a41618853b0d101132ad4.pdf",
+          "source_quote": "Packaging dimensions Height 8.9 inch, Width 3.9 inch, Depth 0.9 inch; Gross weight 0.364 lb"
+        }
+      ],
+      "short_name": "无线充电器"
+    }
+  ]
+}
