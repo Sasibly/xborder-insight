@@ -196,17 +196,47 @@ def test_dimensions_narrow_the_envelope_compared_to_declaration_only(conn):
 # ---------------------------------------------------------------- 越界与缺失
 
 
-def test_oversize_box_is_refused_not_downgraded():
-    """三边任一条超出即不属于标准尺寸；大件费未录，必须报缺而不是按标准件算。"""
+def test_oversize_box_routes_to_small_bulky():
+    """三边超出 18×14×8 但仍在 37×28×20 之内 → 小号大件，不再报缺。
+
+    迁移 v12 之前这条是 `ParamUnverified`（大件费率未录）；
+    录入 2026 两期大件费率后，它必须落到具体某一段，且只落一段。
+    """
+    result = pkg.classify(pkg.PackageFacts(True, 32.0, (20, 14, 8)))
+    assert result.size_tiers == ("small_bulky",)
+    # 计费重量取实重与体积重较大者：20×14×8 的体积重 257.8 oz 压过 32 oz 实重
+    assert result.tiers[0].max_oz == pytest.approx(20 * 14 * 8 / 139 * 16)
+
+
+def test_extra_large_is_refused_not_downgraded():
+    """长+围超 130 或计费重量超 50 lb → 超大件，费率未录，必须报缺。"""
     with pytest.raises(ParamUnverified) as info:
-        pkg.classify(pkg.PackageFacts(True, 32.0, (20, 14, 8)))
-    assert "不属于标准尺寸" in info.value.message
-    assert "大件" in (info.value.detail or "")
+        pkg.classify(pkg.PackageFacts(True, 32.0, (70, 30, 30)))
+    assert "超大件" in info.value.message
 
 
-def test_heavy_item_is_refused():
+def test_heavy_item_goes_to_small_bulky():
+    """21 lb 的三边在 18×14×8 内：按计费重量定档，属大件，不是「报不了价」。"""
+    result = pkg.classify(pkg.PackageFacts(True, 21 * 16, (12, 10, 6)))
+    assert result.size_tiers == ("small_bulky",)
+
+
+def test_very_heavy_item_is_refused():
+    """60 lb 超过大件 50 lb 上限 → 超大件，仍报缺。"""
     with pytest.raises(ParamUnverified):
-        pkg.classify(pkg.PackageFacts(True, 21 * 16, (12, 10, 6)))
+        pkg.classify(pkg.PackageFacts(True, 60 * 16, (12, 10, 6)))
+
+
+def test_long_thin_box_is_not_bulky_even_if_edges_pass():
+    """59×33×33 的长+围 191 英寸远超 130：只比三边会把它错判成 bulky。"""
+    assert pkg.bulky_tier((59, 33, 33), 100.0) is None
+    assert pkg.girth_in((59, 33, 33)) == pytest.approx(59 + 2 * (33 + 33))
+
+
+def test_bulky_dim_weight_uses_two_inch_minimum_sides():
+    """40×1×1 的扁长件：标准口径 0.29 lb，大件口径按宽高 ≥2 英寸 → 1.15 lb。"""
+    assert pkg.dimensional_weight_oz((40, 1, 1)) == pytest.approx(40 / 139 * 16)
+    assert pkg.bulky_dim_weight_oz((40, 1, 1)) == pytest.approx(40 * 2 * 2 / 139 * 16)
 
 
 def test_declared_oversize_is_refused():

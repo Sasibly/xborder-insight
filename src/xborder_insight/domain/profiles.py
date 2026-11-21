@@ -32,7 +32,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..errors import InputInvalid
+from ..errors import InputInvalid, ParamUnverified
 from . import package as pkg
 
 #: 判定为「只是勉强」的裕度带宽。见模块注释：5% 小于纸箱公差与读数误差。
@@ -200,7 +200,29 @@ class CategoryReport:
         return VERDICT_QUOTE_TIGHT if any(v.worst_edge.tight for v in self.variants) else VERDICT_QUOTE
 
     @property
+    def bulky_quotable(self) -> bool:
+        """超标准尺寸的机型是否都还能按大件报价。
+
+        大件两段（small_bulky / large_bulky）2026 两期的费率已录（迁移 v12），
+        所以「进不了标准尺寸」不再等于「报不了价」——只有超出大件范围、
+        落到超大件的那部分才是真缺。判据直接复用 `package.classify`，
+        不在这里另写一套尺寸比较，避免两层口径打架。
+        """
+        for variant in self.variants:
+            if variant.fits:
+                continue
+            try:
+                pkg.classify(variant.as_facts())
+            except ParamUnverified:
+                return False
+        return True
+
+    @property
     def verdict_label(self) -> str:
+        if self.verdict.startswith(VERDICT_NOT_STANDARD):
+            if self.bulky_quotable:
+                return "超出标准尺寸，但可按大件报价（2026 两期已录，须给三边）"
+            return "超过大件范围（超大件），费率未录，无法报价"
         return _VERDICT_LABELS[self.verdict]
 
     def headline(self) -> str:
@@ -213,12 +235,23 @@ class CategoryReport:
                 key=lambda v: v.worst_edge.ratio,
             )
             edge = closest.worst_edge
+            if self.bulky_quotable:
+                return (
+                    f"先量 {closest.spec.model}：{edge.label}只超 {abs(edge.ratio):.1%}"
+                    f"（{edge.value:g} vs {edge.limit:g} 英寸）。翻转进标准尺寸就能"
+                    "直接报价，不翻转也落在小号大件——两条路都有价，只是差 $2–4/件"
+                )
             return (
                 f"先量 {closest.spec.model}：{edge.label}只超 {abs(edge.ratio):.1%}"
                 f"（{edge.value:g} vs {edge.limit:g} 英寸），翻转即变成可报价"
             )
         if self.verdict == VERDICT_NOT_STANDARD:
-            return "该品类进不了标准尺寸：要么改小包装，要么等大件费率录入"
+            if self.bulky_quotable:
+                return (
+                    "进不了标准尺寸，但落在小号大件：给三边即可按大件费率报价，"
+                    "不必改小包装"
+                )
+            return "超过大件范围：要么改小包装，要么等超大件费率录入"
         if self.battery_divergent:
             return "尺寸够用，但含不含锂电池必须逐 SKU 确认（费率差近两成）"
         if self.verdict == VERDICT_QUOTE_TIGHT:

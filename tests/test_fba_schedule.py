@@ -122,18 +122,20 @@ def test_version_ranges_are_contiguous_and_non_overlapping(conn):
 
 
 def test_official_rows_are_all_verified_with_source(conn):
-    """378 行（3 期 × 2 类别 × 2 尺寸段 × 档位 × 3 价格带），一行都不许是 draft。"""
+    """402 行 = 378（3 期标准尺寸）+ 24（2026 两期大件），一行都不许是 draft。"""
     rows = fba_db.list_fee_rows(conn, MARKET)
-    assert len(rows) == 378
+    assert len(rows) == 402
     assert all(row.verified for row in rows)
     assert all(row.source_url == SRC for row in rows)
 
 
 def test_official_rows_cover_only_non_apparel_and_dangerous_goods(conn):
-    """服装与大件/超大件整段未录：这是缺口，不是「没有这类商品」。"""
+    """服装与超大件整段未录：这是缺口，不是「没有这类商品」。"""
     rows = fba_db.list_fee_rows(conn, MARKET)
     assert {r.product_class for r in rows} == {"non_apparel", "dangerous_goods"}
-    assert {r.size_tier for r in rows} == {"small_standard", "large_standard"}
+    assert {r.size_tier for r in rows} == {
+        "small_standard", "large_standard", "small_bulky", "large_bulky",
+    }
 
 
 def test_official_table_has_no_gap_within_tier_bounds(conn):
@@ -142,7 +144,8 @@ def test_official_table_has_no_gap_within_tier_bounds(conn):
     assert audit.gap_count == 0
     assert audit.overlap_count == 0
     assert audit.version_overlaps == ()
-    assert audit.banded_dimensions == 36  # 3 期 × 2 类别 × 2 尺寸段 × 3 价格带
+    # 3 期 × 2 类别 × 2 标准尺寸段 × 3 价格带 = 36，加 2 期 × 2 类别 × 2 大件段 × 3 = 24
+    assert audit.banded_dimensions == 60
 
 
 def test_fuel_surcharge_is_verified(conn):
@@ -678,13 +681,22 @@ def test_peak_is_never_cheaper_than_off_peak(conn):
 
 
 def test_2027_is_never_cheaper_than_2026(conn):
-    """2027 非旺季全线不低于 2026 非旺季（官方说明：标准尺寸普涨）。"""
+    """2027 非旺季全线不低于 2026 非旺季（官方说明：标准尺寸普涨）。
+
+    只比两期都有的尺寸段：大件在 2027 被官方重构成十档，本期没有对齐的格子，
+    拿 2026 的 bulky 去比会得出「2027 缺值就是降价」的错误结论。
+    """
     rows = _rows_by_key(conn)
+    compared = 0
     for (version, cls, tier, band), old in rows.items():
         if version != "us_2026_off_peak":
             continue
-        new = rows[("us_2027_off_peak", cls, tier, band)]
+        new = rows.get(("us_2027_off_peak", cls, tier, band))
+        if new is None:
+            continue
+        compared += 1
         assert new.base_fee_usd >= old.base_fee_usd, (tier, cls, band)
+    assert compared == 12  # 2 类别 × 2 个两期都有的尺寸段 × 3 价格带
 
 
 def test_dangerous_goods_is_never_cheaper_than_non_apparel(conn):

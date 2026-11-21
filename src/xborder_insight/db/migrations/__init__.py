@@ -27,6 +27,7 @@ from . import (
     m0009_fba_schedule,
     m0010_fba_rate_version,
     m0011_fba_official_rates,
+    m0012_bulky_rates,
 )
 
 
@@ -57,6 +58,7 @@ MIGRATIONS: tuple[Migration, ...] = (
               m0010_fba_rate_version.down),
     Migration(11, "fba_official_rates", m0011_fba_official_rates.up,
               m0011_fba_official_rates.down),
+    Migration(12, "bulky_rates", m0012_bulky_rates.up, m0012_bulky_rates.down),
 )
 
 BY_VERSION: dict[int, Migration] = {m.version: m for m in MIGRATIONS}

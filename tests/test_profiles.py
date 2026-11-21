@@ -245,11 +245,12 @@ def test_battery_divergence_blocks_category_level_fill(tmp_path: Path):
 # ---------------------------------------------------------------- 与包装层衔接
 
 
-def test_exceeding_variant_cannot_be_quoted_through_package_layer(tmp_path: Path):
-    """超限机型走 package.classify 必须抛 ParamUnverified，而不是给个便宜价。"""
+def test_exceeding_variant_routes_to_bulky_not_standard_price(tmp_path: Path):
+    """超限机型走 package.classify 必须落在小号大件，而不是被当成标准件算便宜价。"""
     report = _report(tmp_path, [_variant(model="a", dims_in=[15.4, 10.2, 10.2])])
-    with pytest.raises(ParamUnverified):
-        pkg.classify(report.variants[0].as_facts())
+    result = pkg.classify(report.variants[0].as_facts())
+    assert result.size_tiers == ("small_bulky",)
+    assert report.bulky_quotable is True
 
 
 def test_billable_weight_takes_the_larger_of_unit_and_dim_weight(tmp_path: Path):

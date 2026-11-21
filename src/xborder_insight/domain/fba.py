@@ -50,7 +50,13 @@ from ..errors import InputInvalid, ParamUnverified
 OZ_PER_LB = 16.0
 _EPS = 1e-9
 
-SIZE_TIERS = ("small_standard", "large_standard", "large_bulky", "extra_large")
+SIZE_TIERS = (
+    "small_standard",
+    "large_standard",
+    "small_bulky",
+    "large_bulky",
+    "extra_large",
+)
 PRICE_BANDS = ("under_10", "10_to_50", "over_50")
 SEASONS = ("off_peak", "peak")
 
@@ -62,6 +68,7 @@ PEAK_END = (1, 14)
 SIZE_TIER_LABELS = {
     "small_standard": "小号标准件",
     "large_standard": "大号标准件",
+    "small_bulky": "小号大件",
     "large_bulky": "大件",
     "extra_large": "超大件",
 }
@@ -84,14 +91,16 @@ PRODUCT_CLASS_LABELS = {
 SEASON_LABELS = {"off_peak": "非旺季（1/15–10/14）", "peak": "旺季（10/15–1/14）"}
 
 # 尺寸段自身的重量上界（oz）：超过它的重量根本不属于这一段。
-# 取值来自官方尺寸段定义（小号标准件 ≤16 oz，大号标准件 ≤20 lb），
-# 刻意**不**从表里的最后一行反推——否则漏录最后一档时，上界会跟着缩，
-# 缺口就被自己的缺失掩盖了。
-# 未登记上界的尺寸段（bulky / extra_large）保持空：那几段整段未录，
+# 取值来自官方尺寸段定义（小号标准件 ≤16 oz，大号标准件 ≤20 lb，
+# 小号大件与大件均 ≤50 lb），刻意**不**从表里的最后一行反推——否则漏录最后一档时，
+# 上界会跟着缩，缺口就被自己的缺失掩盖了。
+# 未登记上界的尺寸段（extra_large）保持空：那一段整段未录，
 # 「上界是多少」本身属于未知，不能顺手抄一个。
 TIER_CEILING_OZ: dict[str, float] = {
     "small_standard": 16.0,
     "large_standard": 320.0,
+    "small_bulky": 800.0,
+    "large_bulky": 800.0,
 }
 
 

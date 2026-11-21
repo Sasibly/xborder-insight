@@ -32,6 +32,7 @@ from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
 from xborder_insight.domain import profiles  # noqa: E402
+from xborder_insight.domain import package as pkg  # noqa: E402
 from xborder_insight.domain.package import PackageFacts  # noqa: E402
 from xborder_insight.domain.fba import (  # noqa: E402
     PRICE_BAND_LABELS,
@@ -139,7 +140,7 @@ def _dump_fba(conn, marketplace: str) -> int:
             )
 
     print("\n注：缺口是结论，不是缺陷——")
-    print("    · 服装（apparel）、大件/超大件（bulky/extra_large）整段未录；")
+    print("    · 服装（apparel）、超大件（extra_large）、2027 期的大件（官方已重构为十档）整段未录；")
     print("    · 2027 旺季（10/15/2027 起）官方未发布，该日期之后的报价一律 503；")
     print("    · small_standard 在 16 oz 以上的「缺口」是尺寸段定义本身（超过 16 oz 即")
     print("      不属于小号标准件），不是费率缺失。")
@@ -237,28 +238,31 @@ def _dump_profile(conn, args) -> int:
     for report in reports:
         for variant in report.variants:
             dims = "×".join(f"{v:g}" for v in variant.spec.dims_in)
-            if variant.fits:
-                try:
-                    _, env = fba_db.envelope_for_package(
-                        conn,
-                        args.market,
-                        variant.as_facts(),
-                        selling_price=args.price,
-                        ship_date=ship_date,
-                    )
-                    fee = f"${env.low_usd:.2f}–${env.high_usd:.2f}"
-                except AppError as exc:
-                    fee = f"[{exc.code}]"
-            else:
+            # 尺寸段由包装事实推出，不由「fits 标准尺寸」这个二元判断决定：
+            # 落在大件也是可报价的（2026 两期），只有超大件才是真缺。
+            try:
+                klass = pkg.classify(variant.as_facts())
+                _, env = fba_db.envelope_for_package(
+                    conn,
+                    args.market,
+                    variant.as_facts(),
+                    selling_price=args.price,
+                    ship_date=ship_date,
+                )
+                tiers = "/".join(SIZE_TIER_LABELS.get(t, t) for t in klass.size_tiers)
+                fee = f"${env.low_usd:.2f}–${env.high_usd:.2f}（{tiers}）"
+                billable = max(variant.spec.weight_oz, klass.dim_weight_oz or 0.0)
+            except AppError as exc:
                 unreachable += 1
-                fee = "费率未录（超出标准尺寸）"
+                billable = variant.billable_oz
+                fee = f"[{exc.code}] {exc.message[:28]}"
             print(
                 _pad(report.spec.label, 14)
                 + _pad(variant.spec.model, 34)
                 + _pad(_fmt_yes_no(variant.spec.has_lithium_battery), 6)
                 + _pad(dims, 24)
                 + _pad(f"{variant.spec.weight_oz:.1f}", 9)
-                + _pad(f"{variant.billable_oz:.1f}", 9)
+                + _pad(f"{billable:.1f}", 9)
                 + fee
             )
         print()
@@ -282,10 +286,12 @@ def _dump_profile(conn, args) -> int:
 
     if unreachable:
         print(
-            f"注意：{unreachable}/{sum(len(r.variants) for r in reports)} 台机型落在标准尺寸之外。"
+            f"注意：{unreachable}/{sum(len(r.variants) for r in reports)} 台机型"
+            "报不出价（超出大件范围，或该期大件未录）。"
         )
         print(
-            "  大件/超大件费率整段未录（docs/07 H11），超出的商品不是「费用高一点」，"
+            "  大件两段（small_bulky / large_bulky）2026 两期的费率已录；"
+            "仍报缺的是超大件与 2027 期（docs/07 H14），这部分不是「费用高一点」，"
             "而是根本给不出报价。"
         )
     print(

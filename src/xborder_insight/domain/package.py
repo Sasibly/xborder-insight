@@ -49,6 +49,29 @@ SMALL_STANDARD_MAX_DIMS_IN = (15.0, 12.0, 0.75)
 #: 小号标准件的单位重量上限。这一档**不取体积重**。
 SMALL_STANDARD_MAX_OZ = 16.0
 
+#: 大件的三边上限与「长 + 围」上限，`Product size tiers` 2026 定义表原文：
+#: small bulky ≤ 37 / 28 / 20 英寸、large bulky ≤ 59 / 33 / 33 英寸，两者均要求
+#: 长 + 围 ≤130 英寸、计费重量 ≤50 lb。按长度降序存放，与 standard 同一套比对方式。
+BULKY_MAX_DIMS_IN: dict[str, tuple[float, float, float]] = {
+    "small_bulky": (37.0, 28.0, 20.0),
+    "large_bulky": (59.0, 33.0, 33.0),
+}
+
+#: 「长 + 围」上限。围（girth）= 2 ×（次长边 + 最短边），官方术语表原文。
+BULKY_MAX_GIRTH_IN = 130.0
+
+#: 大件两段的计费重量上限：50 lb。超过 50 lb 归超大件，费率未录。
+BULKY_MAX_OZ = 50.0 * 16.0
+
+#: 大件 / 超大件的体积重把宽、高各按**至少 2 英寸**算（官方 FAQ：
+#: "For bulky items and oversize items, we assume a minimum width and height of
+#: 2 inches"）。与标准尺寸口径不同，所以不能复用 `dimensional_weight_oz`。
+BULKY_MIN_SIDE_IN = 2.0
+
+#: 中文名只在本模块的说明文字里用；页面上的显示名归 `domain/fba.py` 管，
+#: 这里不反过来 import 它，避免 schedule 层与 package 层互相依赖。
+_BULKY_TIER_CN = {"small_bulky": "小号大件", "large_bulky": "大件"}
+
 #: 大号标准件的计费重量上限（20 lb）。超过即不属于标准尺寸。
 LARGE_STANDARD_MAX_OZ = 20.0 * 16.0
 
@@ -97,6 +120,50 @@ def small_standard_edge_violation(
 ) -> tuple[int, float, float] | None:
     """三边是否都装得进小号标准件的 15×12×0.75。"""
     return edge_violation(dims_in, SMALL_STANDARD_MAX_DIMS_IN)
+
+
+def girth_in(dims_in: tuple[float, float, float]) -> float:
+    """长 + 围（英寸）。围 = 2 ×（次长边 + 最短边），官方术语表口径。"""
+    ordered = sorted((float(v) for v in dims_in), reverse=True)
+    return ordered[0] + 2.0 * (ordered[1] + ordered[2])
+
+
+def bulky_dim_weight_oz(dims_in: tuple[float, float, float]) -> float:
+    """大件 / 超大件的体积重：宽、高各按至少 2 英寸算。
+
+    为什么不能复用 `dimensional_weight_oz`：一件 40×3×3 的扁长货，标准口径
+    体积重 2.6 lb，官方对大件按 40×3×3 里「宽高不小于 2」算——虽然这里恰好
+    都 ≥2 没有差别，但 40×1×1 这种就会从 0.29 lb 变成 1.15 lb。
+    口径不同就得是两个函数，别为了省一个函数名把两套规则合并。
+    """
+    ordered = sorted((float(v) for v in dims_in), reverse=True)
+    length, median, shortest = ordered
+    return (
+        length
+        * max(median, BULKY_MIN_SIDE_IN)
+        * max(shortest, BULKY_MIN_SIDE_IN)
+        / DIM_WEIGHT_DIVISOR
+        * 16.0
+    )
+
+
+def bulky_tier(
+    dims_in: tuple[float, float, float], shipping_weight_oz: float
+) -> str | None:
+    """落在小件大件 / 大件 / 超大件（返回 None 表示超大件，费率未录）。
+
+    判定顺序不能颠倒：先重量（>50 lb 直接是超大件），再「长 + 围」
+    （超 130 也不是 bulky），最后才比三边。只比三边会漏掉细长件——
+    59×33×33 的长+围是 191 英寸，远超 130，但它三边都没超。
+    """
+    if shipping_weight_oz > BULKY_MAX_OZ + _EPS:
+        return None
+    if girth_in(dims_in) > BULKY_MAX_GIRTH_IN + _EPS:
+        return None
+    for tier in ("small_bulky", "large_bulky"):
+        if edge_violation(dims_in, BULKY_MAX_DIMS_IN[tier]) is None:
+            return tier
+    return None
 
 
 def fits_standard(dims_in: tuple[float, float, float]) -> bool:
@@ -186,6 +253,62 @@ _PRODUCT_CLASS_LABEL = {
 }
 
 
+def _bulky_class(
+    *,
+    product_class: str,
+    dims: tuple[float, float, float],
+    unit: float,
+    reasons: list[str],
+    assumptions: list[str],
+) -> PackageClass:
+    """按大件口径定档：先说清为什么掉出标准尺寸，再判小件大件 / 大件 / 超大件。"""
+    dim_weight = bulky_dim_weight_oz(dims)
+    shipping = max(unit, dim_weight)
+    tier = bulky_tier(dims, shipping)
+    if tier is None:
+        girth = girth_in(dims)
+        raise ParamUnverified(
+            f"包装已超出大件范围（长+围 {girth:g} 英寸 / 计费重量 "
+            f"{shipping / 16:.2f} lb），属超大件",
+            detail=(
+                f"大件的界线是：计费重量 ≤50 lb、长+围 ≤130 英寸、三边 ≤ "
+                f"{BULKY_MAX_DIMS_IN['small_bulky'][0]:g}×"
+                f"{BULKY_MAX_DIMS_IN['small_bulky'][1]:g}×"
+                f"{BULKY_MAX_DIMS_IN['small_bulky'][2]:g}（小号）或 "
+                f"{BULKY_MAX_DIMS_IN['large_bulky'][0]:g}×"
+                f"{BULKY_MAX_DIMS_IN['large_bulky'][1]:g}×"
+                f"{BULKY_MAX_DIMS_IN['large_bulky'][2]:g}（大号）英寸。"
+                "超大件（extra_large）费率尚未录入，不能拿大件费率顶替"
+            ),
+        )
+    assumptions.extend(reasons)
+    assumptions.append(
+        f"按大件口径计体积重：宽、高各按至少 {BULKY_MIN_SIDE_IN:g} 英寸算 → "
+        f"{dim_weight:.1f} oz；计费重量取实重与体积重较大者 {shipping:.1f} oz"
+        f"（{shipping / 16:.2f} lb）"
+    )
+    assumptions.append(
+        f"尺寸段 = {_BULKY_TIER_CN[tier]}：计费重量 ≤50 lb、长+围 "
+        f"{girth_in(dims):g} 英寸 ≤{BULKY_MAX_GIRTH_IN:g} 英寸，且三边均在"
+        f" 37×28×20（小号）与 59×33×33（大号）之内"
+    )
+    return PackageClass(
+        product_class=product_class,
+        tiers=(
+            TierLimit(
+                tier,
+                min(shipping, BULKY_MAX_OZ),
+                "实重与体积重取大（大件体积重的宽高按 ≥2 英寸算）",
+            ),
+        ),
+        unit_weight_oz=unit,
+        dim_weight_oz=dim_weight,
+        dims_in=dims,
+        assumptions=tuple(assumptions),
+        warnings=(),
+    )
+
+
 def classify(facts: PackageFacts) -> PackageClass:
     """把包装事实翻成「产品类别 + 可能的尺寸段 + 各段计费重量上界」。
 
@@ -221,16 +344,27 @@ def classify(facts: PackageFacts) -> PackageClass:
         if edge is not None:
             position, value, limit = edge
             ordinal = {1: "最长边", 2: "次长边", 3: "最短边"}[position]
-            raise ParamUnverified(
-                f"包装{ordinal} {value:g} 英寸超过标准尺寸上限 {limit:g} 英寸，"
-                "不属于标准尺寸",
-                detail=(
-                    f"三边上限为 {STANDARD_MAX_DIMS_IN[0]:g} × "
-                    f"{STANDARD_MAX_DIMS_IN[1]:g} × {STANDARD_MAX_DIMS_IN[2]:g} 英寸，"
-                    "三条须同时满足。任一条超出即落入大件/超大件（large_bulky / "
-                    "extra_large），这两段的费率尚未录入，无法报价——"
-                    "也不会拿标准尺寸的费率顶替"
-                ),
+            unit_for_bulky = _validate_unit_weight(facts.unit_weight_oz)
+            if unit_for_bulky is None:
+                raise ParamUnverified(
+                    f"包装{ordinal} {value:g} 英寸超过标准尺寸上限 {limit:g} 英寸，"
+                    "已进入大件范围；但缺少包装实重",
+                    detail=(
+                        "大件费率已录（2026 两期），但定档要先知道计费重量是否 ≤50 lb："
+                        "≤50 lb 是大件，>50 lb 是超大件（费率未录）。"
+                        "没给实重就判不了这一点，而体积重不足以替代——实重大的箱子"
+                        "可能直接落到超大件"
+                    ),
+                )
+            return _bulky_class(
+                product_class=product_class,
+                dims=dims,
+                unit=unit_for_bulky,
+                reasons=[
+                    f"包装{ordinal} {value:g} 英寸超过标准尺寸上限 {limit:g} 英寸"
+                    "（三条须同时满足 18×14×8），因此不属于标准尺寸"
+                ],
+                assumptions=assumptions,
             )
         if facts.fits_standard_size is False:
             raise InputInvalid(
@@ -249,10 +383,12 @@ def classify(facts: PackageFacts) -> PackageClass:
             )
         if not facts.fits_standard_size:
             raise ParamUnverified(
-                "包装超出 18×14×8，不属于标准尺寸，大件/超大件费率尚未录入",
+                "声明装不进 18×14×8，但没给三边，无法在大件与小件大件之间定档",
                 detail=(
-                    "该情形会落入 large_bulky / extra_large 段，这两段的官方费率"
-                    "尚未落库。补录后才能报价，现在不能用标准尺寸费率顶替"
+                    "大件费率已录（small_bulky / large_bulky，2026 两期），但这两段的"
+                    "界线是 37×28×20 与 59×33×33 英寸、长+围 130 英寸——只知道"
+                    "「装不进 18×14×8」的话，这三种可能都还在，费用差一倍以上。"
+                    "给三边（长×宽×高，英寸）即可定档"
                 ),
             )
         assumptions.append(
@@ -333,12 +469,45 @@ def classify(facts: PackageFacts) -> PackageClass:
         )
 
     if unit > LARGE_STANDARD_MAX_OZ + _EPS:
-        raise ParamUnverified(
-            f"包装实重 {unit / 16:.2f} lb 超过大号标准件上限 20 lb，不属于标准尺寸",
-            detail=(
-                "超过 20 lb 即落入大件/超大件段，其费率尚未录入。"
-                "注意判定用的是计费重量（实重与体积重取大），实重已超标时无需再算体积重"
+        if dims is not None:
+            # 三边在 18×14×8 以内但实重过 20 lb：官方按计费重量定档，
+            # 这一段属于大件，不是「装不进去」。
+            return _bulky_class(
+                product_class=product_class,
+                dims=dims,
+                unit=unit,
+                reasons=[
+                    f"包装实重 {unit / 16:.2f} lb 超过大号标准件上限 20 lb，"
+                    "虽然三边装得进 18×14×8，但按计费重量定档仍不属于标准尺寸"
+                ],
+                assumptions=assumptions,
+            )
+        shipping = max(unit, dim_weight)
+        if shipping > BULKY_MAX_OZ + _EPS:
+            raise ParamUnverified(
+                f"计费重量 {shipping / 16:.2f} lb 超过大件上限 50 lb，属超大件",
+                detail="超大件（extra_large）费率尚未录入，不能拿大件费率顶替",
+            )
+        assumptions.append(
+            f"三边按声明的 18×14×8 上界计体积重 {dim_weight:.1f} oz，"
+            f"计费重量取实重与体积重较大者 {shipping:.1f} oz（{shipping / 16:.2f} lb）；"
+            "三边未量，长+围按 18×14×8 的上界 62 英寸算，仍在大件的 130 英寸以内"
+        )
+        return PackageClass(
+            product_class=product_class,
+            tiers=(
+                TierLimit(
+                    "small_bulky",
+                    min(shipping, BULKY_MAX_OZ),
+                    "实重与体积重取大（大件体积重的宽高按 ≥2 英寸算）",
+                ),
             ),
+            unit_weight_oz=unit,
+            dim_weight_oz=dim_weight,
+            dims_in=None,
+            volume_ceiling_in3=volume_ceiling,
+            assumptions=tuple(assumptions),
+            warnings=tuple(warnings),
         )
 
     billable_dims = max(unit, dim_weight)
@@ -348,8 +517,8 @@ def classify(facts: PackageFacts) -> PackageClass:
             "不属于标准尺寸",
             detail=(
                 f"实重 {unit / 16:.2f} lb、体积重 {dim_weight / 16:.2f} lb，取大者 "
-                f"{billable_dims / 16:.2f} lb。体积重超标同样会掉出标准尺寸，"
-                "大件/超大件费率尚未录入"
+                f"{billable_dims / 16:.2f} lb。体积重超标同样会掉出标准尺寸——"
+                "大件费率已录，但需要三边才能定档（体积重与长+围都要三边）"
             ),
         )
 

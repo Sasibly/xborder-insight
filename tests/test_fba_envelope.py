@@ -62,7 +62,9 @@ def test_bounds_come_from_rows_that_match_the_request(conn):
         assert row.price_band == "10_to_50"
         assert row.version_key == env.version_key
         assert row.verified, "draft 行不能参与界定一个「可证明」的区间"
-    assert set(env.size_tiers) == {"small_standard", "large_standard"}
+    assert set(env.size_tiers) == {
+        "small_standard", "large_standard", "small_bulky", "large_bulky",
+    }
 
 
 def test_every_real_cell_falls_inside_the_envelope(conn):
@@ -116,11 +118,12 @@ def test_narrowing_only_shrinks_the_interval(conn):
 
 
 def test_small_and_large_union_reproduces_the_full_interval(conn):
-    """两个尺寸段各自的包络，并起来正好是全区间。
+    """两个标准尺寸段各自的包络，并起来正好是「标准尺寸」这一整个区间。
 
-    如果不能，说明某一段里有一行没被扫到（或扫到了不该扫的）。
+    大件两段另算：它们的重量覆盖到 50 lb，并进来会把上界抬到 $30 以上，
+    这条用例验的是标准尺寸内部的可加性，所以显式限定两个段。
     """
-    full = _envelope(conn)
+    full = _envelope(conn, size_tiers=["small_standard", "large_standard"])
     small = _envelope(conn, size_tiers=["small_standard"])
     large = _envelope(conn, size_tiers=["large_standard"])
     assert small.low_usd == pytest.approx(full.low_usd)
@@ -152,8 +155,9 @@ def test_date_without_version_must_fail(conn):
 
 
 def test_weight_range_outside_the_table_must_fail(conn):
+    """所有尺寸段加起来最多到 800 oz（大件 50 lb），再往上没有行就必须报缺。"""
     with pytest.raises(ParamUnverified):
-        _envelope(conn, weight_range_oz=(400.0, 500.0))
+        _envelope(conn, weight_range_oz=(820.0, 900.0))
 
 
 def test_open_ended_row_cannot_bound_the_upper_edge(bare):
