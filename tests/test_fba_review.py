@@ -181,3 +181,79 @@ def test_sheet_missing_a_required_column_is_rejected(tmp_path):
     with pytest.raises(ValueError) as exc:
         rev.read_sheet(path)
     assert "缺少列" in str(exc.value)
+
+
+def test_export_order_follows_the_official_page_layout(cells):
+    """402 格按官方页的表格结构排：一张表 = 期×尺寸段×类别，表内行是重量、列是价格带。
+
+    这条不是为了好看。人核对时是从上往下逐行读的，如果同一个尺寸段的行被
+    价格带打散成三段，就得在三张官方表之间来回跳，402 格没有做完的可能。
+    """
+    groups: list[tuple[str, str, str]] = []
+    for cell in cells:
+        key = (cell.version_key, cell.size_tier, cell.product_class)
+        if not groups or groups[-1] != key:
+            assert key not in groups, f"分组 {key} 不连续——同一张官方表被拆成了两段"
+            groups.append(key)
+
+    band_rank = {"under_10": 0, "10_to_50": 1, "over_50": 2}
+    previous: tuple[tuple[str, str, str], tuple[float, int]] | None = None
+    for cell in cells:
+        key = (cell.version_key, cell.size_tier, cell.product_class)
+        current = (cell.weight_min_oz, band_rank[cell.price_band])
+        if previous is not None and previous[0] == key:
+            assert current >= previous[1], f"{key} 内顺序倒退：{previous[1]} → {current}"
+        previous = (key, current)
+
+
+def test_weight_rows_come_before_price_columns(cells):
+    """价格带是「列」不是「行」：同一重量档的三条价格带必须相邻。
+
+    库里 text 排序会把 over_50 排在 10_to_50 前面（字母序 '1' < 'o'），
+    那样同一行的三个价格带会被拆开，核对时等于把一张表切成三张。
+    """
+    same_weight = [
+        cell for cell in cells
+        if (cell.version_key, cell.size_tier, cell.product_class, cell.weight_min_oz)
+        == (cells[0].version_key, cells[0].size_tier, cells[0].product_class,
+            cells[0].weight_min_oz)
+    ]
+    assert [cell.price_band for cell in same_weight] == ["under_10", "10_to_50", "over_50"]
+
+
+def test_export_order_follows_the_official_page_layout(cells):
+    """402 格按官方页的表格结构排：一张表 = 期×尺寸段×类别，表内行是重量、列是价格带。
+
+    这条不是为了好看。人核对时是从上往下逐行读的，如果同一个尺寸段的行被
+    价格带打散成三段，就得在三张官方表之间来回跳，402 格没有做完的可能。
+    """
+    groups: list[tuple[str, str, str]] = []
+    for cell in cells:
+        key = (cell.version_key, cell.size_tier, cell.product_class)
+        if not groups or groups[-1] != key:
+            assert key not in groups, f"分组 {key} 不连续——同一张官方表被拆成了两段"
+            groups.append(key)
+
+    band_rank = {"under_10": 0, "10_to_50": 1, "over_50": 2}
+    previous: tuple[tuple[str, str, str], tuple[float, int]] | None = None
+    for cell in cells:
+        key = (cell.version_key, cell.size_tier, cell.product_class)
+        current = (cell.weight_min_oz, band_rank[cell.price_band])
+        if previous is not None and previous[0] == key:
+            assert current >= previous[1], f"{key} 内顺序倒退：{previous[1]} → {current}"
+        previous = (key, current)
+
+
+def test_weight_rows_come_before_price_columns(cells):
+    """价格带是「列」不是「行」：同一重量档的三条价格带必须相邻。
+
+    库里 text 排序会把 over_50 排在 10_to_50 前面（字母序 '1' < 'o'），
+    那样同一行的三个价格带会被拆开，核对时等于把一张表切成三张。
+    """
+    same_weight = [
+        cell for cell in cells
+        if (cell.version_key, cell.size_tier, cell.product_class, cell.weight_min_oz)
+        == (cells[0].version_key, cells[0].size_tier, cells[0].product_class,
+            cells[0].weight_min_oz)
+    ]
+    assert [cell.price_band for cell in same_weight] == ["under_10", "10_to_50", "over_50"]

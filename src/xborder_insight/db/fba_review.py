@@ -170,10 +170,25 @@ def cell_id(
     return "R" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:7].upper()
 
 
+# 排序与官方 Product size tiers 页的表格结构对齐：一张表 = 一个尺寸段 × 一个类别，
+# 表内行是重量档、列是价格带。所以列序必须是「期 → 尺寸段 → 类别 → 重量 → 价格带」，
+# 且价格带按金额从低到高（不能按文本：'10_to_50' < 'over_50' < 'under_10' 是字母序）。
+# 排成这样，人才可以从上往下逐行核，而不是在三张表之间来回跳。
+_TIER_ORDER = ("small_standard", "large_standard", "small_bulky", "large_bulky")
+_CLASS_ORDER = ("non_apparel", "dangerous_goods")
+_BAND_ORDER = ("under_10", "10_to_50", "over_50")
+
+
+def _case(column: str, values: tuple[str, ...]) -> str:
+    """生成 ORDER BY 用的 CASE 表达式。未知值排最后，不抛错——新增档位不该让导出失败。"""
+    whens = " ".join(f"WHEN '{value}' THEN {index}" for index, value in enumerate(values))
+    return f"CASE {column} {whens} ELSE {len(values)} END"
+
+
 def load_cells(conn: sqlite3.Connection, marketplace: str = "US") -> tuple[RateCell, ...]:
-    """按「期 → 尺寸段 → 类别 → 价格带 → 重量起点」排序，保证导出可重复。"""
+    """按官方页的表格顺序导出，保证同一份库导出逐字节可重复。"""
     rows = conn.execute(
-        """
+        f"""
         SELECT f.version_key, v.season, v.effective_from, v.effective_to,
                f.size_tier, f.product_class, f.weight_min_oz, f.weight_max_oz,
                f.price_band, f.base_fee_usd, f.per_increment_usd,
@@ -182,8 +197,11 @@ def load_cells(conn: sqlite3.Connection, marketplace: str = "US") -> tuple[RateC
           FROM fba_fee_schedule AS f
           JOIN fba_rate_version AS v ON v.version_key = f.version_key
          WHERE f.marketplace = ?
-         ORDER BY v.effective_from, f.size_tier, f.product_class,
-                  f.price_band, f.weight_min_oz
+         ORDER BY v.effective_from,
+                  {_case('f.size_tier', _TIER_ORDER)},
+                  {_case('f.product_class', _CLASS_ORDER)},
+                  f.weight_min_oz,
+                  {_case('f.price_band', _BAND_ORDER)}
         """,
         (marketplace,),
     ).fetchall()
