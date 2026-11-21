@@ -1,8 +1,11 @@
-"""五台横向实算（`docs/04` §16）：把「哪台为什么不能做」的每个数钉进出门禁。
+"""五台横向实算（`docs/04` §16–§17）：把「哪台为什么不能做」的每个数钉进出门禁。
 
 §16 第一次出现「五台全 NO_GO」这个结论，而它同时依赖三样会变的东西：
 逐台的 HTS 税率、包装尺寸（现在有两套）、以及费率表。任何一样改了，
 结论都可能翻转，所以这里不许写死单个百分比就完事——每条都要能从库里复算。
+
+§17 是 §16 的反解：不问「现在多少」，问「要多低才能到 15%」。反解出来的数
+比正算更容易被一次参数改动悄悄改变（它是解，不是观测值），所以同样必须钉住。
 """
 
 from __future__ import annotations
@@ -58,12 +61,12 @@ def _fee(conn, dims, weight_lb, *, lithium, price):
     return klass, env
 
 
-def _profit(cogs, price, fba, duty):
+def _profit(cogs, price, fba, duty, *, freight=FREIGHT):
     return p.compute(
         p.CostInputs(
             quoted_price=cogs,
             selling_price=price,
-            inbound_freight=FREIGHT,
+            inbound_freight=freight,
             duty_rate=duty,
             referral_rate=REFERRAL,
             fba_fee=fba,
@@ -85,6 +88,36 @@ def _solve(target, cogs, fba, duty):
             low = mid
         else:
             high = mid
+    return (low + high) / 2
+
+
+def _solve_cogs(target, price, fba, duty, *, freight=FREIGHT, low=0.01, high=500.0):
+    """采购价上限：毛利随采购价单调递减，所以二分是安全的。
+
+    刻意不用闭式解：产品售价 ≥$166.67 时退款管理费会撞上 $5 上限
+    （`profit.REFUND_ADMIN_CAP_USD`），闭式解会把上限当线性项，扫地机因此偏 $0.08。
+    解要不依赖「目标 SKU 恰好没撞上限」这件事。
+    """
+    for _ in range(200):
+        mid = (low + high) / 2
+        if _profit(mid, price, fba, duty, freight=freight).gross_margin < target:
+            high = mid
+        else:
+            low = mid
+    return (low + high) / 2
+
+
+def _solve_freight(target, cogs, price, fba, duty):
+    """头程上限。返回 None 表示「头程归零也到不了」——这比返回负数诚实。"""
+    if _profit(cogs, price, fba, duty, freight=0.0).gross_margin < target:
+        return None
+    low, high = 0.0, 200.0
+    for _ in range(200):
+        mid = (low + high) / 2
+        if _profit(cogs, price, fba, duty, freight=mid).gross_margin < target:
+            high = mid
+        else:
+            low = mid
     return (low + high) / 2
 
 
@@ -194,3 +227,131 @@ def test_price_needed_for_15pct(fees, key, label, target_price):
     _, env = fees[(key, label)]
     got = _solve(0.15, spec["cogs"], env.low_usd, spec["duty"])
     assert got == pytest.approx(target_price, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# §17 缺口反解：要多低才能做到 15%
+#
+# §16 只回答了「现在亏多少」。谈判桌上要的是另一件事：**采购价压到多少才够**。
+# 反解出来的是「解」而不是「观测值」，它随任何一个入参变动而整体平移，
+# 所以每个解都要在门禁里留一条——否则文档里的目标价会在参数改动后变成废纸，
+# 而没有任何测试会失败。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "label", "cogs_ceiling"),
+    [
+        ("air_purifier", "a", 16.74),
+        ("air_purifier", "b", 27.60),
+        ("coffee_machine", "a", 14.90),
+        ("electric_kettle", "a", 1.13),
+        ("robot_vacuum", "a", 79.85),
+        ("pet_fountain", "b", 11.05),
+    ],
+)
+def test_cogs_ceiling_for_15pct(fees, key, label, cogs_ceiling):
+    """采购价上限：高于这个数，这台在现价上就不可能到 15%。
+
+    这个数比「毛利率」好用，理由是它是**对外的语言**：跟供应商谈的是单价，
+    不是毛利率。把它算出来之后，「能不能做」就变成「他肯不肯降到这个价」，
+    而不是一轮又一轮地重算模型。
+
+    上限都远低于现价——最接近的咖啡机也要 −19.5%，最远的水壶要 −83%。
+    所以「谈采购价」对四台都不成立，只有咖啡机勉强算得上一场真正的谈判。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    got = _solve_cogs(0.15, spec["price"], env.low_usd, spec["duty"])
+    assert got == pytest.approx(cogs_ceiling, abs=0.02)
+    # 解的自我校验：把解代回去，毛利率必须正好落在 15%（不是「差不多 15%」）
+    back = _profit(got, spec["price"], env.low_usd, spec["duty"]).gross_margin
+    assert back == pytest.approx(0.15, abs=1e-6)
+
+
+def test_kettle_cogs_ceiling_is_below_its_own_packaging(fees):
+    """水壶要活下来，采购价必须降到 $1.13——比它的彩盒还便宜。
+
+    这条测试的意义是**把「不现实」写成数字**：$6.80 → $1.13 是 −83%，
+    不是「再谈谈」的量级。水壶真正的问题是 FBA 占售价 36%（小号大件），
+    不是采购价高。所以它的出路只有涨价（$40.79，+36%）或换尺寸段，
+    去压供应商是选错了杠杆。
+    """
+    spec = SKU["electric_kettle"]
+    _, env = fees[("electric_kettle", "a")]
+    ceiling = _solve_cogs(0.15, spec["price"], env.low_usd, spec["duty"])
+    assert ceiling < spec["cogs"] * 0.2
+
+
+@pytest.mark.parametrize(
+    ("key", "label", "freight_ceiling"),
+    [
+        ("coffee_machine", "a", 1.53),
+        ("pet_fountain", "b", 2.10),
+    ],
+)
+def test_freight_alone_can_still_flip_two_skus(fees, key, label, freight_ceiling):
+    """咖啡机与饮水机的缺口，单靠头程就能补上——但门槛低到不现实。
+
+    咖啡机头程要 ≤ $1.53/件，饮水机 ≤ $2.10/件，而海运 LCL 单件分摊通常在
+    $5–10。所以这条不是「有希望」，而是**把最后一条杠杆也排除掉**：
+    排除之后，这两台剩下的路径与另外三台是同一件事——涨价或换供应链。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    got = _solve_freight(0.15, spec["cogs"], spec["price"], env.low_usd, spec["duty"])
+    assert got == pytest.approx(freight_ceiling, abs=0.02)
+
+
+@pytest.mark.parametrize("key", ["air_purifier", "electric_kettle", "robot_vacuum"])
+def test_freight_is_a_dead_lever_for_three_skus(fees, key):
+    """三台的头程归零也到不了 15%——所以「等货代回价」对它们不是关键路径。
+
+    净化器头程归零仍是 −0.02%（缺口 22.6 点 > 头程最大贡献 7.6 点）；
+    水壶归零是 13.09%，差 1.9 点，最接近但仍不够；扫地机归零是 −3.87%。
+
+    这条要守的是**优先级**：如果三台的结论已经不取决于头程，那把询价单
+    当下一步就是排错了顺序。
+    """
+    spec = SKU[key]
+    label = "a" if spec["a"] else "b"
+    _, env = fees[(key, label)]
+    got = _solve_freight(0.15, spec["cogs"], spec["price"], env.low_usd, spec["duty"])
+    assert got is None
+    zero = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"], freight=0.0)
+    assert zero.gross_margin < 0.15
+
+
+def test_purchasing_leverage_differs_sevenfold_across_skus(fees):
+    """采购价每降 $1，水壶补 3.92 点、扫地机只补 0.57 点——差 6.9 倍。
+
+    所以「统一去谈 10% 折扣」这种策略是错的：同一个 10% 对水壶是补 2.7 点，
+    对扫地机只补 6.7 点，而对扫地机需要补的缺口是 21.9 点。
+    杠杆效率差这么多，是因为分母不同（毛利率的分母是售价），不是采购价高低。
+    """
+    pts = {}
+    for key, spec in SKU.items():
+        label = "a" if spec["a"] else "b"
+        _, env = fees[(key, label)]
+        base = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"])
+        one_less = _profit(spec["cogs"] - 1.0, spec["price"], env.low_usd, spec["duty"])
+        pts[key] = one_less.gross_margin - base.gross_margin
+    assert pts["electric_kettle"] == pytest.approx(0.0392, abs=5e-4)
+    assert pts["robot_vacuum"] == pytest.approx(0.0057, abs=5e-4)
+    assert pts["electric_kettle"] / pts["robot_vacuum"] > 6.5
+
+
+def test_price_and_cogs_levers_trade_at_half(fees):
+    """售价每涨 $1，采购价上限只上移 $0.49–0.54——不是 1:1。
+
+    这条防的是「涨 $1 售价就能抵 $1 采购」的直觉：佣金 15% 与退款冲减 8%
+    会把涨价的三成先拿走，剩下的才落到毛利里。做报价方案时按 1:1 换算是
+    系统性乐观。
+    """
+    for key, spec in SKU.items():
+        label = "a" if spec["a"] else "b"
+        _, env = fees[(key, label)]
+        at_now = _solve_cogs(0.15, spec["price"], env.low_usd, spec["duty"])
+        at_plus5 = _solve_cogs(0.15, spec["price"] + 5.0, env.low_usd, spec["duty"])
+        per_dollar = (at_plus5 - at_now) / 5.0
+        assert 0.48 < per_dollar < 0.55, f"{key}: 售价 $1 换 {per_dollar:.2f} 采购上限"
