@@ -243,9 +243,19 @@ def _dump_profile(conn, args) -> int:
     print(f"  售价 ${args.price:.2f}　发货日 {ship_date.isoformat()}")
     print(f"  数据口径：{profile.label}")
     if profile.measured:
-        print(
-            "  尺寸与重量取自实测；含锂未逐台核 BOM 的机型会同时给出两种费率表的结果"
-        )
+        # 口径说明跟着数据走：全核过了就别再写「未逐台核 BOM」，否则读者会以为还有两套表
+        pending_battery = [
+            v.spec.model for r in reports for v in r.variants
+            if not v.spec.battery_confirmed
+        ]
+        if pending_battery:
+            print(
+                "  尺寸与重量取自实测；含锂未逐台核 BOM 的机型会同时给出两种费率表的结果"
+            )
+        else:
+            print(
+                "  尺寸、重量与含锂判定均已实测/确认；含锂与否决定用普通商品表还是危险品表"
+            )
     print("=" * 104)
     print(
         _pad("品类", 14) + _pad("机型", 34) + _pad("含锂", 6)
@@ -331,10 +341,13 @@ def _dump_profile(conn, args) -> int:
                 "费率表不同，不能按品类统一填"
             )
         if profile.measured:
-            print(
-                "    下一步：可直接按上表报价（尺寸与重量已实测）。"
+            pending = any(not v.spec.battery_confirmed for v in report.variants)
+            tail = (
                 "含锂未确认的机型两套结果都已列出，取保守侧"
+                if pending
+                else "含锂已确认，按对应费率表报价"
             )
+            print(f"    下一步：可直接按上表报价（尺寸与重量已实测）。{tail}")
         else:
             print(f"    下一步：{report.headline()}")
         print()

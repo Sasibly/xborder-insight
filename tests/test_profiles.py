@@ -334,8 +334,9 @@ def test_measured_profile_collapses_to_single_point(tmp_path: Path):
 def test_repo_measured_profile_matches_what_was_measured():
     """仓库里那份实测画像必须与 11-21 收到的四台一致，且口径是「包装后」。
 
-    机器人按保守侧取含锂：同品类两台在售机型都是 2600 mAh Li-ion，
-    带基站机型不存在无电池款。取 false 会把每件成本少算 $1.28。
+    H2-c 已于 11-21 关闭：四台的含锂判定都由用户给出（三台插电无电池、
+    扫地机 2600 mAh Li-ion）。机制没变——`unconfirmed_battery` 仍会列出
+    `battery_confirmed=false` 的行，只是这份档里现在没有这样的行。
     """
     profile = prof.load_profile(prof.MEASURED_PROFILE_PATH)
     assert profile.measured
@@ -355,8 +356,13 @@ def test_repo_measured_profile_matches_what_was_measured():
 
     vacuum = next(c for c in profile.categories if c.key == "robot_vacuum")
     assert vacuum.variants[0].has_lithium_battery is True
-    # 全部机型都还没核过 BOM，一台都不许标成已确认
-    assert len(profile.unconfirmed_battery) == 4
+    assert profile.unconfirmed_battery == ()
+    assert all(c.variants[0].battery_confirmed for c in profile.categories)
+    assert all(
+        not c.variants[0].has_lithium_battery
+        for c in profile.categories
+        if c.key != "robot_vacuum"
+    )
 
     reports = prof.load_reports(prof.MEASURED_PROFILE_PATH)
     assert all(r.bulky_quotable for r in reports), "四台都应收敛到小号大件，不该报缺"
@@ -430,34 +436,3 @@ def test_measured_profile_collapses_to_single_point(tmp_path: Path):
     assert profile.exact_weight is True
     assert [v.model for v in profile.unconfirmed_battery] == ["x"]
     assert "实测" in profile.label
-
-
-def test_repo_measured_profile_matches_what_was_measured():
-    """仓库里那份实测画像必须与 11-21 收到的四台一致，且口径是「包装后」。
-
-    机器人按保守侧取含锂：同品类两台在售机型都是 2600 mAh Li-ion，
-    带基站机型不存在无电池款。取 false 会把每件成本少算 $1.28。
-    """
-    profile = prof.load_profile(prof.MEASURED_PROFILE_PATH)
-    assert profile.measured
-    assert [c.key for c in profile.categories] == [
-        "air_purifier",
-        "coffee_machine",
-        "electric_kettle",
-        "robot_vacuum",
-    ]
-    dims = {
-        c.key: c.variants[0].dims_in for c in profile.categories
-    }
-    assert dims["air_purifier"] == (24.0, 15.0, 15.0)
-    assert dims["coffee_machine"] == (16.0, 13.0, 9.5)
-    assert dims["electric_kettle"] == (10.5, 9.2, 8.4)
-    assert dims["robot_vacuum"] == (22.0, 18.0, 14.0)
-
-    vacuum = next(c for c in profile.categories if c.key == "robot_vacuum")
-    assert vacuum.variants[0].has_lithium_battery is True
-    # 全部机型都还没核过 BOM，一台都不许标成已确认
-    assert len(profile.unconfirmed_battery) == 4
-
-    reports = prof.load_reports(prof.MEASURED_PROFILE_PATH)
-    assert all(r.bulky_quotable for r in reports), "四台都应收敛到小号大件，不该报缺"

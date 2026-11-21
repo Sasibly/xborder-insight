@@ -3,7 +3,7 @@
   "captured_at": "2026-11-21",
   "marketplace": "US",
   "evidence": "用户 2026-11-21 口述包装后三边（英寸）与包装毛重（磅），未提供照片或单据。口径为「包装后」，不是裸机。",
-  "note": "尺寸与重量是本档的实测部分。含锂一列仍全部 battery_confirmed=false——没人逐台看过 BOM。扫地机的 has_lithium_battery=true 是**保守侧**取值（同品类两台在售机型均为 2600 mAh Li-ion），不是已确认事实；确认无电池后可改 false 并把费用降回普货表。",
+  "note": "尺寸与重量是本档的实测部分。含锂判定已于 2026-11-21 由用户逐台给出（H2-c）：净化器/咖啡机/水壶为插电款无内置电池，扫地机确认 2600 mAh Li-ion。依据是用户判定 + 品类规格书，不是拆机照片——若后续开箱发现电池仓，须改回并重算。",
   "categories": [
     {
       "key": "air_purifier",
@@ -20,8 +20,8 @@
           "weight_oz": 296.0,
           "weight_source": "包装毛重 18.5 lb（用户口述）",
           "has_lithium_battery": false,
-          "battery_confirmed": false,
-          "battery_basis": "未逐台核 BOM。同品类两台在售机型均为市电直插、规格书无电池项，故按普货口径取值",
+          "battery_confirmed": true,
+          "battery_basis": "用户 2026-11-21 判定（H2-c）：插电款，无内置电池。依据为品类规格书与用户观察，未拆机核 BOM",
           "measured_at": "2026-11-21",
           "source_url": "",
           "source_quote": "包装 24×15×15 英寸，包装实重 18.5 磅"
@@ -43,8 +43,8 @@
           "weight_oz": 232.0,
           "weight_source": "包装毛重 14.5 lb（用户口述）",
           "has_lithium_battery": false,
-          "battery_confirmed": false,
-          "battery_basis": "未逐台核 BOM。同品类两台在售机型均为市电直插 1050–1350 W、规格书无电池项",
+          "battery_confirmed": true,
+          "battery_basis": "用户 2026-11-21 判定（H2-c）：插电款 1050–1350 W，无内置电池。依据为品类规格书与用户观察，未拆机核 BOM",
           "measured_at": "2026-11-21",
           "source_url": "",
           "source_quote": "包装 16×13×9.5 英寸，包装实重 14.5 磅"
@@ -66,8 +66,8 @@
           "weight_oz": 76.8,
           "weight_source": "包装毛重 4.8 lb（用户口述）",
           "has_lithium_battery": false,
-          "battery_confirmed": false,
-          "battery_basis": "未逐台核 BOM。同品类两台在售机型均为市电底座供电、规格书无电池项",
+          "battery_confirmed": true,
+          "battery_basis": "用户 2026-11-21 判定（H2-c）：市电底座供电，无内置电池。依据为品类规格书与用户观察，未拆机核 BOM",
           "measured_at": "2026-11-21",
           "source_url": "",
           "source_quote": "包装 10.5×9.2×8.4 英寸，包装实重 4.8 磅"
@@ -89,8 +89,8 @@
           "weight_oz": 259.2,
           "weight_source": "包装毛重 16.2 lb（用户口述）",
           "has_lithium_battery": true,
-          "battery_confirmed": false,
-          "battery_basis": "未逐台核 BOM，取保守侧：同品类两台在售机型均为 2600 mAh Li-ion，带基站机型不存在无电池款。确认无电池后可改 false",
+          "battery_confirmed": true,
+          "battery_basis": "用户 2026-11-21 确认（H2-c）：2600 mAh Li-ion 内置。含锂为已确认事实，走危险品表",
           "measured_at": "2026-11-21",
           "source_url": "",
           "source_quote": "包装 22×18×14 英寸，包装实重 16.2 磅"
