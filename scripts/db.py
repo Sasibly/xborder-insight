@@ -456,8 +456,12 @@ def _dump_envelope(conn, args) -> int:
 def _dump_transport(args) -> int:
     lithium = args.lithium == "yes"
     try:
-        result = transport.check(args.mode, has_lithium_battery=lithium)
-    except transport.UnknownTransportMode as exc:
+        result = transport.check(
+            args.mode,
+            has_lithium_battery=lithium,
+            battery_installation=args.battery_installation,
+        )
+    except (transport.UnknownTransportMode, transport.UnknownBatteryInstallation) as exc:
         print(f"[无法判定] {exc}")
         return 2
 
@@ -465,11 +469,18 @@ def _dump_transport(args) -> int:
     print("-" * 62)
     print(f"  方式：{result.mode.label}（{result.mode.code}）")
     print(f"  货物：{'含锂电池' if lithium else '不含锂电池（普货）'}")
-    print(f"  结论：{'可发' if result.ok else '不可发'}")
+    if result.installation is not None:
+        print(
+            f"  电池：{result.installation.label}"
+            f" → {result.installation.packing_instruction}"
+        )
+    elif lithium:
+        print("  电池：形态未确认（内置不可拆 / 可拆配套 / 纯电池）")
+    print(f"  结论：{result.verdict_label}")
     if result.reason:
         print(f"  原因：{result.reason}")
     print(f"  依据：{result.mode.basis}")
-    if not result.ok:
+    if result.verdict == transport.VERDICT_BLOCKED:
         print("  需要的文件：不适用——这个组合本身不成立，补文件也发不出去")
     elif result.required_docs:
         print("  需要的文件：")
@@ -485,8 +496,14 @@ def _dump_transport(args) -> int:
         print(f"  ! {line}")
     print()
     print(f"  口径状态：{result.mode.status}　"
-          "PI967/PI966 是货代行业转述，未逐条核实 IATA/民航局原文；")
+          "PI967/PI966/PI965 是货代行业转述，未逐条核实 IATA/民航局原文；")
     print("  时效与单价一律以货代报价单为准，本工具不凭空给数。")
+
+    if result.verdict == transport.VERDICT_BLOCKED:
+        return 1
+    if result.verdict == transport.VERDICT_NEED_INFO:
+        return 3
+    return 0
     return 0 if result.ok else 1
 
 
@@ -553,6 +570,13 @@ def main(argv: list[str] | None = None) -> int:
                            default="air_battery", help="默认带电渠道空运")
     tr_parser.add_argument("--lithium", choices=("yes", "no"), required=True,
                            help="该 SKU 含不含锂电池（看 BOM，不看默认使用方式）")
+    tr_parser.add_argument(
+        "--battery-installation",
+        choices=tuple(transport.BATTERY_INSTALLATIONS),
+        default=None,
+        help="电池形态：built_in=内置不可拆(PI967) / removable=配套可拆(PI966) / "
+             "standalone=纯电池(PI965)。含锂但不给这一项 → 结论为「需先确认电池形态」",
+    )
 
     prof_parser = sub.add_parser(
         "fba-profile",
