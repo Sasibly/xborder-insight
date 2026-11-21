@@ -35,7 +35,7 @@ def _fee(conn, dims, weight_oz, *, lithium=False, price=SELLING_PRICE):
     return klass, env
 
 
-def _profit(fba_fee, *, price=SELLING_PRICE, freight=6.00, duty=0.25, returns=0.08):
+def _profit(fba_fee, *, price=SELLING_PRICE, freight=6.00, duty=0.237, returns=0.08):
     return p.compute(
         p.CostInputs(
             quoted_price=QUOTED_PRICE,
@@ -91,47 +91,55 @@ def test_same_sku_three_readings(conn):
     assert known.gross_margin == pytest.approx(0.33589, abs=5e-4)
 
     landed = _profit(before.low_usd, returns=0.0)
-    assert landed.gross_margin == pytest.approx(0.16982, abs=5e-4)
+    assert landed.gross_margin == pytest.approx(0.17357, abs=5e-4)
 
     full = _profit(before.low_usd)
-    assert full.gross_margin == pytest.approx(0.07523, abs=5e-4)
+    assert full.gross_margin == pytest.approx(0.07899, abs=5e-4)
 
     # 改包后同一口径：+3.99 个点
-    assert _profit(after.low_usd).gross_margin == pytest.approx(0.11510, abs=5e-4)
+    assert _profit(after.low_usd).gross_margin == pytest.approx(0.11884, abs=5e-4)
 
 
 @pytest.mark.parametrize(
     ("duty", "margin"),
-    [(0.00, 0.18742), (0.10, 0.15844), (0.25, 0.11510), (0.35, 0.08617)],
+    [
+        (0.000, 0.18735),  # 有 FTA 或豁免时的上界
+        (0.162, 0.14052),  # 已确认下限：MFN 3.7% + 301 强迫劳动 12.5%
+        (0.237, 0.11884),  # 最可能：再加 301 List 4A 的 7.5%（待 note 20(r)）
+        (0.375, 0.07894),  # 若 25% 旧清单也叠加（充电器的结构，不是咖啡机）
+    ],
 )
 def test_duty_is_the_loudest_lever(conn, duty, margin):
-    """关税 0→35% 掉 10 个点，比改包（+4pt）与换货代（约 +3pt）都大。
+    """关税 0→37.5% 掉 11 个点，比改包（+4pt）与换货代（约 +3pt）都大。
 
     所以 H8 不是「补一个参数」，它决定低价打法这条路是否存在。
+    四档都钉住，是因为 23.7% 尚未 verified——哪一档最终成立都不该让测试失效。
     """
     _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
     assert _profit(after.low_usd, duty=duty).gross_margin == pytest.approx(margin, abs=5e-4)
 
 
-def _solve_price(target_margin: float, fba_fee: float) -> float:
+def _solve_price(target_margin: float, fba_fee: float, *, duty: float = 0.237) -> float:
     low, high = 20.0, 400.0
     for _ in range(80):
         mid = (low + high) / 2
-        if _profit(fba_fee, price=mid).gross_margin < target_margin:
+        if _profit(fba_fee, price=mid, duty=duty).gross_margin < target_margin:
             low = mid
         else:
             high = mid
     return (low + high) / 2
 
 
-def test_15pct_floor_is_6761_after_repack(conn):
-    """券后 $63.99 只有 11.5% 的 ACOS 上限，打不起广告；15% 线在 $67.61。"""
+def test_15pct_floor_is_6722_after_repack(conn):
+    """券后 $63.99 只有 11.9% 的 ACOS 上限，打不起广告；15% 线在 $67.22。"""
     _, before = _fee(conn, (16.0, 13.0, 9.5), 232.0)
     _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
 
-    assert _solve_price(0.15, before.low_usd) == pytest.approx(71.74, abs=0.05)
-    assert _solve_price(0.15, after.low_usd) == pytest.approx(67.61, abs=0.05)
-    assert _solve_price(0.20, after.low_usd) == pytest.approx(73.56, abs=0.05)
+    assert _solve_price(0.15, before.low_usd) == pytest.approx(71.35, abs=0.05)
+    assert _solve_price(0.15, after.low_usd) == pytest.approx(67.22, abs=0.05)
+    assert _solve_price(0.20, after.low_usd) == pytest.approx(73.14, abs=0.05)
+    # 若 List 4A 不适用（16.2%），15% 线降到 $64.97 —— 与 $63.99 只差 0.98
+    assert _solve_price(0.15, after.low_usd, duty=0.162) == pytest.approx(64.97, abs=0.05)
 
 
 def _dg_gap(conn, size_tier: str, weight_min: float, price_band: str, version: str) -> float:
