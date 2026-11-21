@@ -45,6 +45,10 @@
 - 典型规格推断 **不能用于判定尺寸段**：实测咖啡机超 18.75%、水壶超 5.0%，
   而按典型规格估的是 1.2% / 3.4%。量包装，不量裸机。
 - 净化器 5400 in³、扫地机 5544 in³，标准尺寸上限仅 2016 in³（18×14×8）→ 改包不可能。
+- 画像分两档、两个文件：`market_typical.json`(assumed，永不可升级) 与
+  `measured_skus.json`(measured)。**status 是文件级**，不混装。measured 档强制
+  evidence + 每行 measured_at + battery_confirmed，并自动 `exact_weight`。
+- 含锂未核过的行**同时显示两套费率表**；扫地机取含锂（$25.51），早先的 $24.23 用错了口径。
 - 运输维（domain/transport.py）：电池形态 built_in(PI967)/removable(PI966)/standalone(PI965)
   必须显式，**未确认时不给 ok**。need_info 只在「结论会翻转」时用（空运：可客机↔禁运）；
   只是文件多少变时取最严档（海运）。PI 条款与 100Wh 门槛仍是 draft，不写时效与单价。
