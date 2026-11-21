@@ -341,6 +341,30 @@ def test_purchasing_leverage_differs_sevenfold_across_skus(fees):
     assert pts["electric_kettle"] / pts["robot_vacuum"] > 6.5
 
 
+@pytest.mark.parametrize(
+    ("key", "label", "margin"),
+    [
+        ("air_purifier", "a", -0.076437),
+        ("coffee_machine", "a", 0.079034),
+        ("electric_kettle", "a", -0.072345),
+        ("robot_vacuum", "a", -0.069196),
+        ("pet_fountain", "b", 0.063898),
+    ],
+)
+def test_reported_margins_are_not_double_rounded(fees, key, label, margin):
+    """毛利率由「未舍入的毛利 ÷ 售价」得出，不能先把毛利舍到分再除。
+
+    旧文档写的是 −7.65% / −7.24% / 6.38%，那是把 −$6.12 ÷ $79.99 算出来的——
+    分母用了未舍入值、分子用了舍入值。误差只有 1 个基点，但后果是
+    「文档里的数字」与「测试算出来的数字」对不上，而后者才是能复现的那个。
+    四舍五入方向反了会让一次对账变成一场争论。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    got = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"]).gross_margin
+    assert got == pytest.approx(margin, abs=1e-5)
+
+
 def test_price_and_cogs_levers_trade_at_half(fees):
     """售价每涨 $1，采购价上限只上移 $0.49–0.54——不是 1:1。
 
