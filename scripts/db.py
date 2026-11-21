@@ -71,35 +71,66 @@ def _fmt_oz(value: float | None) -> str:
 
 
 def _dump_fba(conn, marketplace: str) -> int:
+    versions = fba_db.list_rate_versions(conn, marketplace)
     audit = fba_db.audit(conn, marketplace)
     print(f"FBA 配送费维表  市场={marketplace}")
     print("-" * 58)
+    print("  费率版本：")
+    for version in versions:
+        flag = "已核实" if version.verified else f"待核实({version.status})"
+        print(
+            f"    · {version.version_key:<20} {version.period_label}  "
+            f"{version.season:<9} {flag}"
+        )
+    if audit.version_overlaps:
+        pairs = "、".join(f"{a}×{b}" for a, b in audit.version_overlaps)
+        print(f"    ⚠ 版本区间重叠 {len(audit.version_overlaps)} 处：{pairs}")
+    elif versions:
+        print("    版本区间无重叠")
+
+    rate, why = fba_db.fuel_surcharge(conn, marketplace)
+    print(
+        "  燃油与物流附加费："
+        + (f"已核实 {rate:.2%}（按配送费计提）" if rate is not None else f"未施加 —— {why}")
+    )
+    print()
     print(
         f"  共 {audit.total_rows} 行 · 已核实 {audit.verified_rows} · "
         f"待核实 {audit.draft_rows}"
     )
     print(
-        f"  已声明角度组合 {audit.banded_dimensions} 个 · "
+        f"  已声明角组合 {audit.banded_dimensions} 个 · "
         f"重量缺口 {audit.gap_count} 处 · 区间重叠 {audit.overlap_count} 处"
     )
-    for group in audit.groups:
-        gap_text = (
-            "无缺口"
-            if not group.gaps
-            else "缺口 " + "、".join(f"{_fmt_oz(lo)}–{_fmt_oz(hi)}" for lo, hi in group.gaps)
-        )
-        overlap_text = (
-            "" if not group.overlaps
-            else f"  ⚠ 重叠 {len(group.overlaps)} 处"
-        )
-        print(f"\n  · {group.key}  （{len(group.bands)} 档 / {gap_text}{overlap_text}）")
-        for lo, hi in group.bands:
-            print(f"      {_fmt_oz(lo):>5} – {_fmt_oz(hi):<5} oz")
-    print(
-        "\n注：这张表只登记了 large_standard / 非旺季 / 非服饰 / 未含燃油附加费的口径。"
-    )
-    print("    未核实行无法用于报价：resolve() 会抛 param_unverified（503），")
-    print("    查询缺口不会外推到相邻尺寸段或相邻重量档。")
+
+    for version in versions:
+        groups = [g for g in audit.groups if g.version_key == version.version_key]
+        if not groups:
+            print(f"\n  [{version.version_key}] 一行未录")
+            continue
+        print(f"\n  [{version.version_key}] {version.period_label}")
+        for group in groups:
+            gap_text = (
+                "无缺口"
+                if not group.gaps
+                else "缺口 " + "、".join(
+                    f"{_fmt_oz(lo)}–{_fmt_oz(hi)}" for lo, hi in group.gaps
+                )
+            )
+            overlap_text = "" if not group.overlaps else f"  ⚠ 重叠 {len(group.overlaps)} 处"
+            draft_text = "" if not group.draft else f" · draft {group.draft}"
+            print(
+                f"    · {group.size_tier:<15}{group.product_class:<16}{group.price_band:<10}"
+                f" {len(group.bands):>2} 档  {gap_text}{draft_text}{overlap_text}"
+            )
+
+    print("\n注：缺口是结论，不是缺陷——")
+    print("    · 服装（apparel）、大件/超大件（bulky/extra_large）整段未录；")
+    print("    · 2027 旺季（10/15/2027 起）官方未发布，该日期之后的报价一律 503；")
+    print("    · small_standard 在 16 oz 以上的「缺口」是尺寸段定义本身（超过 16 oz 即")
+    print("      不属于小号标准件），不是费率缺失。")
+    print("    resolve() 对缺版本 / 缺档位 / 未核实分别抛 param_unverified（503），")
+    print("    不会外推到相邻期、相邻尺寸段或相邻产品类别。")
     return 0
 
 

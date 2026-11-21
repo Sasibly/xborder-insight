@@ -17,7 +17,8 @@ from xborder_insight.db.connection import schema_fingerprint, table_names, trans
 from xborder_insight.db.migrations import LATEST, ordered
 
 BUSINESS_TABLES = {
-    "reviews", "runs", "cost_params", "compliance_rules", "fba_fee_schedule"
+    "reviews", "runs", "cost_params", "compliance_rules",
+    "fba_fee_schedule", "fba_rate_version",
 }
 
 

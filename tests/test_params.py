@@ -24,13 +24,28 @@ MARKET = "US"
 # ---------- 交付层：种子数据必须诚实 ----------
 
 
-def test_seeded_params_are_all_draft(conn):
-    """预置参数一律 draft。要让它们变成 verified，必须人工补官方来源。"""
+# 唯一允许预置为 verified 的参数。加进来必须同时满足：
+# 来自官方站点、写在 docs/04 的核实记录里、且 note 说清适用口径。
+# 这份白名单是「防止有人为了演示好看偷偷塞数字」的最后一道闸：
+# 想让它变长，就得先在代码评审里解释清楚。
+VERIFIED_EXCEPTIONS = {"amazon.fba_fuel_surcharge"}
+
+
+def test_seeded_params_are_draft_except_documented_exceptions(conn):
+    """预置参数默认一律 draft；例外项必须有来源、生效日期、核实日期。"""
     seeded = params.list_params(conn, MARKET)
     assert seeded, "种子数据不应为空，否则等于没声明要核实什么"
-    assert all(p.status == params.DRAFT for p in seeded)
-    assert all(p.value is None for p in seeded)
-    assert all(p.source_url is None for p in seeded)
+
+    verified = {p.param_key for p in seeded if p.status == params.VERIFIED}
+    assert verified == VERIFIED_EXCEPTIONS
+
+    for param in seeded:
+        if param.param_key in VERIFIED_EXCEPTIONS:
+            assert param.value is not None
+            assert param.source_url and param.effective_date and param.verified_at
+        else:
+            assert param.value is None, f"{param.param_key} 未核实却有值"
+            assert param.source_url is None
 
 
 def test_seeded_params_explain_what_to_verify(conn):
@@ -128,7 +143,8 @@ def test_compliance_rule_also_requires_source(conn):
 
 
 def test_snapshot_excludes_unverified(conn):
-    assert params.snapshot(conn, MARKET) == {}
+    """快照只带已核实的参数：未核实的项不能进入任何下游计算。"""
+    assert set(params.snapshot(conn, MARKET)) == VERIFIED_EXCEPTIONS
     params.mark_verified(
         conn,
         "amazon.referral_rate",
@@ -138,13 +154,16 @@ def test_snapshot_excludes_unverified(conn):
         effective_date="2026-01-01",
         verified_at="2026-11-17",
     )
-    assert params.snapshot(conn, MARKET) == {"amazon.referral_rate": 0.15}
+    snapshot = params.snapshot(conn, MARKET)
+    assert snapshot["amazon.referral_rate"] == 0.15
+    assert set(snapshot) == VERIFIED_EXCEPTIONS | {"amazon.referral_rate"}
 
 
 def test_coverage_reports_honest_numbers(conn):
     info = params.coverage(conn, MARKET)
     assert info["total"] == info["verified"] + info["draft"]
-    assert info["verified"] == 0
+    assert info["verified"] == len(VERIFIED_EXCEPTIONS)
+    assert set(info["verified_keys"]) == VERIFIED_EXCEPTIONS
     assert "amazon.referral_rate" in info["missing_keys"]
 
 
