@@ -32,6 +32,7 @@ from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
 from xborder_insight.domain import profiles  # noqa: E402
+from xborder_insight.domain import transport  # noqa: E402
 from xborder_insight.domain import package as pkg  # noqa: E402
 from xborder_insight.domain.package import PackageFacts  # noqa: E402
 from xborder_insight.domain.fba import (  # noqa: E402
@@ -452,6 +453,43 @@ def _dump_envelope(conn, args) -> int:
     return 0
 
 
+def _dump_transport(args) -> int:
+    lithium = args.lithium == "yes"
+    try:
+        result = transport.check(args.mode, has_lithium_battery=lithium)
+    except transport.UnknownTransportMode as exc:
+        print(f"[无法判定] {exc}")
+        return 2
+
+    print("运输方式可行性")
+    print("-" * 62)
+    print(f"  方式：{result.mode.label}（{result.mode.code}）")
+    print(f"  货物：{'含锂电池' if lithium else '不含锂电池（普货）'}")
+    print(f"  结论：{'可发' if result.ok else '不可发'}")
+    if result.reason:
+        print(f"  原因：{result.reason}")
+    print(f"  依据：{result.mode.basis}")
+    if not result.ok:
+        print("  需要的文件：不适用——这个组合本身不成立，补文件也发不出去")
+    elif result.required_docs:
+        print("  需要的文件：")
+        for doc in result.required_docs:
+            print(f"    · {doc}")
+    else:
+        print("  需要的文件：无（不含电池，按普货申报）")
+    if result.ok:
+        print("  头程报价单还必须给（缺一项就无法落进利润模型）：")
+        for field in result.quote_fields:
+            print(f"    · {field}")
+    for line in result.warnings:
+        print(f"  ! {line}")
+    print()
+    print(f"  口径状态：{result.mode.status}　"
+          "PI967/PI966 是货代行业转述，未逐条核实 IATA/民航局原文；")
+    print("  时效与单价一律以货代报价单为准，本工具不凭空给数。")
+    return 0 if result.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -507,6 +545,15 @@ def main(argv: list[str] | None = None) -> int:
     env_parser.add_argument("--exact-weight", action="store_true",
                             help="实重是实测值而非上界估计：区间收成单点（须与 --dims 一起给）")
 
+    tr_parser = sub.add_parser(
+        "transport",
+        help="运输方式可行性：含锂货能不能走这个渠道、要哪些文件",
+    )
+    tr_parser.add_argument("--mode", choices=tuple(transport.TRANSPORT_MODES),
+                           default="air_battery", help="默认带电渠道空运")
+    tr_parser.add_argument("--lithium", choices=("yes", "no"), required=True,
+                           help="该 SKU 含不含锂电池（看 BOM，不看默认使用方式）")
+
     prof_parser = sub.add_parser(
         "fba-profile",
         help="按市场典型规格跑一遍：这些品类到底报不报得出价",
@@ -543,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
         if result["schema_drift"]:
             print(f"  schema 漂移：{result['schema_drift']}")
         return 0 if ok else 1
+
+    if args.command == "transport":
+        # 不碰数据库：这是纯规则判定，没有需要核实的数值参与。
+        return _dump_transport(args)
 
     if args.db:
         target = args.db
