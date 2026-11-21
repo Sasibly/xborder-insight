@@ -16,8 +16,12 @@
 
 三个数字都是官方口径，不在这里重新定义：
     体积重（oz）   = 长 × 宽 × 高 ÷ 139（英寸 → 磅）× 16
-    小号标准件上限 = 单位重量 16 oz（且不取体积重）
+    小号标准件上限 = 单位重量 16 oz + 三边 ≤ 15 / 12 / 0.75 英寸（且不取体积重）
     大号标准件上限 = 计费重量 20 lb，三边分别 ≤ 18 / 14 / 8 英寸
+
+尺寸段定义出处：`Product size tiers`
+<https://sellercentral.amazon.com/help/hub/reference/external/GG5KW835AHDJCH8W>
+（2026-11-21 抓取；该页无登录墙，2026 定义表的原文即可引用）。
 """
 
 from __future__ import annotations
@@ -34,6 +38,13 @@ DIM_WEIGHT_DIVISOR = 139.0
 
 #: 大号标准件的三边上限，**按长度降序**：最长 ≤18、次长 ≤14、最短 ≤8。
 STANDARD_MAX_DIMS_IN = (18.0, 14.0, 8.0)
+
+#: 小号标准件的三边上限，**按长度降序**：最长 ≤15、次长 ≤12、最短 ≤0.75。
+#: 官方原文（`Product size tiers`，2026 定义，2027-01-14 前有效）：
+#: "Small standard-size | Up to 16 oz | Up to 15 inches | Up to 12 inches |
+#: Up to 0.75 inch"。同一页的示例也印证：13.8 × 9 × 0.7 英寸 / 2.88 oz
+#: 判为 Small standard。
+SMALL_STANDARD_MAX_DIMS_IN = (15.0, 12.0, 0.75)
 
 #: 小号标准件的单位重量上限。这一档**不取体积重**。
 SMALL_STANDARD_MAX_OZ = 16.0
@@ -57,20 +68,35 @@ def dimensional_weight_oz(dims_in: tuple[float, float, float]) -> float:
     return length * width * height / DIM_WEIGHT_DIVISOR * 16.0
 
 
-def standard_edge_violation(
+def edge_violation(
     dims_in: tuple[float, float, float],
+    limits: tuple[float, float, float] = STANDARD_MAX_DIMS_IN,
 ) -> tuple[int, float, float] | None:
-    """检查三边是否都装得进 18×14×8。
+    """检查三边是否都装得进给定的三边上限。
 
     返回 `(第几长边(1/2/3), 实际值, 上限)`；全部满足返回 None。
     先按长度降序排，再逐位比对——不排序的话，18×8×14 这种写法会把
     次长边 14 拿去和上限 14 比、最短边 8 拿去和上限 18 比，判成通过。
     """
     ordered = sorted((float(v) for v in dims_in), reverse=True)
-    for index, (value, limit) in enumerate(zip(ordered, STANDARD_MAX_DIMS_IN), start=1):
+    for index, (value, limit) in enumerate(zip(ordered, limits), start=1):
         if value > limit + _EPS:
             return index, value, limit
     return None
+
+
+def standard_edge_violation(
+    dims_in: tuple[float, float, float],
+) -> tuple[int, float, float] | None:
+    """三边是否都装得进大号标准件的 18×14×8。"""
+    return edge_violation(dims_in, STANDARD_MAX_DIMS_IN)
+
+
+def small_standard_edge_violation(
+    dims_in: tuple[float, float, float],
+) -> tuple[int, float, float] | None:
+    """三边是否都装得进小号标准件的 15×12×0.75。"""
+    return edge_violation(dims_in, SMALL_STANDARD_MAX_DIMS_IN)
 
 
 def fits_standard(dims_in: tuple[float, float, float]) -> bool:
@@ -279,9 +305,19 @@ def classify(facts: PackageFacts) -> PackageClass:
         assumptions.append(
             "未给实重，小号标准件按 16 oz 上界、大号标准件按 20 lb 上界取包络"
         )
-        tiers.append(
-            TierLimit("small_standard", SMALL_STANDARD_MAX_OZ, "单位重量（不取体积重）")
-        )
+        small_edge = None if dims is None else small_standard_edge_violation(dims)
+        if small_edge is not None:
+            # 三边已经超出 15×12×0.75，无论多重都不可能是小号标准件。
+            position, value, limit = small_edge
+            ordinal = {1: "最长边", 2: "次长边", 3: "最短边"}[position]
+            assumptions.append(
+                f"{ordinal} {value:g} 英寸超过小号标准件上限 {limit:g} 英寸，"
+                "已排除 small_standard"
+            )
+        else:
+            tiers.append(
+                TierLimit("small_standard", SMALL_STANDARD_MAX_OZ, "单位重量（不取体积重）")
+            )
         tiers.append(
             TierLimit("large_standard", LARGE_STANDARD_MAX_OZ, "实重与体积重取大")
         )
@@ -317,33 +353,53 @@ def classify(facts: PackageFacts) -> PackageClass:
             ),
         )
 
-    # 小号标准件：单位重量 ≤16 oz 才可能，且不取体积重。
+    # 小号标准件：单位重量 ≤16 oz **且**三边都装得进 15×12×0.75，且不取体积重。
+    definitely_small = False
     if unit <= SMALL_STANDARD_MAX_OZ + _EPS:
-        tiers.append(
-            TierLimit("small_standard", unit, "单位重量（不取体积重）")
-        )
-        # 同一个包裹也可能因三边超出小号标准上限而按大号标准件计费——
-        # 小号标准件的三边上限本模块未校验，所以两种可能都保留。
-        warnings.append(
-            "实重 ≤16 oz 只说明**够得着**小号标准件；若包装三边超出小号标准件的"
-            "尺寸上限，同一件货会按大号标准件计费并取体积重。本模块只校验了 "
-            "18×14×8，未校验小号标准件的三边上限（见 docs/07 H13），"
-            "所以两个尺寸段都保留在区间里"
-        )
-    tiers.append(
-        TierLimit(
-            "large_standard",
-            min(billable_dims, LARGE_STANDARD_MAX_OZ),
-            "实重与体积重取大",
-        )
-    )
+        if dims is None:
+            tiers.append(
+                TierLimit("small_standard", unit, "单位重量（不取体积重）")
+            )
+            warnings.append(
+                "实重 ≤16 oz 只说明**够得着**小号标准件；没给三边就判不了它的"
+                "15×12×0.75 上限（尤其最短边 0.75 英寸，多数纸箱都不满足），"
+                "所以 small_standard 与 large_standard 两段都留在区间里。"
+                "补三边即可收敛到一段"
+            )
+        else:
+            small_edge = small_standard_edge_violation(dims)
+            if small_edge is None:
+                # 三边与小号标准件上限相符，且实重 ≤16 oz：只可能是小号标准件。
+                tiers.append(
+                    TierLimit("small_standard", unit, "单位重量（不取体积重）")
+                )
+                definitely_small = True
+                assumptions.append(
+                    "实重 ≤16 oz 且三边均在 15×12×0.75 以内 → 小号标准件，"
+                    "只可能是这一段（不再保留大号标准件）"
+                )
+            else:
+                position, value, limit = small_edge
+                ordinal = {1: "最长边", 2: "次长边", 3: "最短边"}[position]
+                assumptions.append(
+                    f"实重 ≤16 oz，但{ordinal} {value:g} 英寸超过小号标准件上限 "
+                    f"{limit:g} 英寸 → 只能是大号标准件，已排除 small_standard"
+                )
 
-    assumptions.append(
-        f"实重 {unit:.1f} oz、体积重 {dim_weight:.1f} oz，"
-        f"大号标准件计费重量按较大者 {billable_dims:.1f} oz 取上界；"
-        "实重按上界用，费用区间下端仍从最轻档起算——给的是「不超过多少」，"
-        "不能据此假定实际不会更轻"
-    )
+    if not definitely_small:
+        tiers.append(
+            TierLimit(
+                "large_standard",
+                min(billable_dims, LARGE_STANDARD_MAX_OZ),
+                "实重与体积重取大",
+            )
+        )
+        assumptions.append(
+            f"实重 {unit:.1f} oz、体积重 {dim_weight:.1f} oz，"
+            f"大号标准件计费重量按较大者 {billable_dims:.1f} oz 取上界；"
+            "实重按上界用，费用区间下端仍从最轻档起算——给的是「不超过多少」，"
+            "不能据此假定实际不会更轻"
+        )
     return PackageClass(
         product_class=product_class,
         tiers=tuple(tiers),

@@ -108,10 +108,35 @@ def test_unit_weight_over_16oz_is_large_standard_only():
     assert result.size_tiers == ("large_standard",)
 
 
-def test_unit_weight_under_16oz_keeps_both_tiers():
-    """实重 10 oz 只说明「够得着」小号标准件；包装偏大仍会按大号标准件计费。"""
+def test_dims_over_small_standard_short_side_drops_small_tier():
+    """实重 10 oz 但最短边 6 英寸 > 0.75 英寸的小号标准上限 → 只能是大号标准件。
+
+    这条在 H13 关闭前是「两段都保留」：当时没有可引用的三边上限，
+    宁可把区间放宽。拿到官方原文后（15×12×0.75），这一段可以直接排掉。
+    """
     result = pkg.classify(pkg.PackageFacts(True, 10.0, (12, 10, 6)))
+    assert result.size_tiers == ("large_standard",)
+
+
+def test_dims_within_small_standard_keep_small_tier_only():
+    """官方示例：13.8 × 9 × 0.7 英寸 / 2.88 oz 判为 Small standard。"""
+    result = pkg.classify(pkg.PackageFacts(True, 2.88, (13.8, 9.0, 0.7)))
+    assert result.size_tiers == ("small_standard",)
+
+
+def test_small_standard_edge_limits_are_official_values():
+    """三边上限必须就是官方表里的 15×12×0.75，别改成「差不多」的数。"""
+    assert pkg.SMALL_STANDARD_MAX_DIMS_IN == (15.0, 12.0, 0.75)
+    assert pkg.small_standard_edge_violation((15.0, 12.0, 0.75)) is None
+    assert pkg.small_standard_edge_violation((15.1, 12.0, 0.75)) == (1, 15.1, 15.0)
+    assert pkg.small_standard_edge_violation((15.0, 12.0, 0.76)) == (3, 0.76, 0.75)
+
+
+def test_unit_weight_under_16oz_without_dims_keeps_both_tiers():
+    """没给三边就判不了 15×12×0.75，两段都保留（方向安全，宁宽不窄）。"""
+    result = pkg.classify(pkg.PackageFacts(True, 10.0, None, True))
     assert result.size_tiers == ("small_standard", "large_standard")
+    assert any("0.75" in w for w in result.warnings)
 
 
 def test_large_standard_billable_weight_is_max_of_unit_and_dim():
