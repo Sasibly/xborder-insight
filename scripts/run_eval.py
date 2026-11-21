@@ -50,18 +50,17 @@ def load_gold() -> dict[str, set[str]]:
     return gold
 
 
-async def run() -> dict[str, object]:
-    started = time.perf_counter()
+def discover_datasets() -> list[str]:
+    """自动发现样本集，不写死清单。
 
-    gold = load_gold()
-    reviews = []
-    for dataset in ("wireless_charger", "pet_fountain"):
-        reviews.extend(load_reviews(dataset))
+    写死清单的失败模式很隐蔽：加了新品类却忘了加进评测，新品类永远不会进指标，
+    而指标本身看起来完全正常——覆盖率下降不会让任何断言变红。
+    """
+    return sorted(p.stem for p in (ROOT / "data" / "samples").glob("*.jsonl"))
 
-    client = build_llm_client(settings)
-    outcomes, stats = await extract_many(client, reviews)
-    await client.aclose()
 
+def score(outcomes, gold: dict[str, set[str]]) -> dict[str, object]:
+    """micro 平均：以 (review_id, label) 为最小单元。"""
     tp = fp = fn = 0
     errors: list[dict[str, object]] = []
     for outcome in outcomes:
@@ -71,8 +70,7 @@ async def run() -> dict[str, object]:
             predicted = {
                 p.label for p in outcome.extraction.points if p.polarity == "negative"
             }
-        hit = truth & predicted
-        tp += len(hit)
+        tp += len(truth & predicted)
         fp += len(predicted - truth)
         fn += len(truth - predicted)
         if predicted != truth:
@@ -87,6 +85,55 @@ async def run() -> dict[str, object]:
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "reviews": len(outcomes),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1": round(f1, 4),
+        "failing_review_ids": sorted(c["review_id"] for c in errors),
+        "error_cases": errors,
+    }
+
+
+async def run() -> dict[str, object]:
+    started = time.perf_counter()
+
+    gold = load_gold()
+    datasets = discover_datasets()
+    reviews = []
+    owner: dict[str, str] = {}
+    for dataset in datasets:
+        batch = load_reviews(dataset)
+        for review in batch:
+            owner[review.review_id] = dataset
+        reviews.extend(batch)
+
+    # 样本缺金标准时，「真值」会退化成空集：预测全记 FP 或全记 TP，
+    # 指标依然是个合法数字。这种静默错配比崩掉更危险，直接拒绝跑。
+    missing_gold = sorted(r.review_id for r in reviews if r.review_id not in gold)
+    if missing_gold:
+        raise SystemExit(
+            f"以下样本没有金标准，拒绝评测：{missing_gold[:10]}"
+            f"{' 等 %d 条' % len(missing_gold) if len(missing_gold) > 10 else ''}"
+        )
+
+    client = build_llm_client(settings)
+    outcomes, stats = await extract_many(client, reviews)
+    await client.aclose()
+
+    overall = score(outcomes, gold)
+    tp, fp, fn = overall["tp"], overall["fp"], overall["fn"]
+    precision, recall, f1 = overall["precision"], overall["recall"], overall["f1"]
+    errors = overall["error_cases"]
+
+    by_dataset = {}
+    for dataset in datasets:
+        subset = [o for o in outcomes if owner[o.review_id] == dataset]
+        if subset:
+            by_dataset[dataset] = score(subset, gold)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     total_tokens = stats.prompt_tokens + stats.completion_tokens
@@ -96,6 +143,7 @@ async def run() -> dict[str, object]:
         "run_mode": settings.run_mode,
         "model": settings.llm_model if not settings.is_mock else "mock-rules",
         "embedding": settings.embedding_provider,
+        "datasets": datasets,
         "reviews": stats.total,
         "parsed": stats.parsed,
         "parse_success_rate": round(stats.parse_success_rate, 4),
@@ -120,6 +168,9 @@ async def run() -> dict[str, object]:
         "elapsed_ms": elapsed_ms,
         "failing_review_ids": sorted(c["review_id"] for c in errors),
         "error_cases": errors,
+        # 分品类指标：用来量化「规则基线在单品类能跑、跨品类就塌」这件事。
+        # 总量指标会掩盖它——平均值把两类产品的中等表现混成一个看不出问题的数字。
+        "by_dataset": by_dataset,
     }
 
     REPORT_PATH.parent.mkdir(exist_ok=True)
@@ -150,6 +201,12 @@ def main() -> None:
     print(f"调用延迟         P50 {result['latency_p50_ms']:.0f}ms · "
           f"P95 {result['latency_p95_ms']:.0f}ms · Max {result['latency_max_ms']:.0f}ms")
     print(f"总耗时           {result['elapsed_ms']}ms")
+    print("-" * 62)
+    print("分品类：")
+    for dataset, item in result["by_dataset"].items():
+        print(f"  {dataset:<20}{item['reviews']:>4} 条   "
+              f"P {item['precision']:.4f}  R {item['recall']:.4f}  F1 {item['f1']:.4f}"
+              f"   (TP {item['tp']} / FP {item['fp']} / FN {item['fn']})")
     print("-" * 62)
     print("未完全匹配样本：")
     for case in result["error_cases"]:
