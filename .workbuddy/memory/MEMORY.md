@@ -19,8 +19,12 @@
 
 ## 结构现状（易忘）
 
-- 迁移已到 **v9**；`db.py roundtrip` 是「up→down→up 指纹一致」的硬门槛。
-- 新增业务表必须同步 `tests/test_migrations.py` 的 `BUSINESS_TABLES`。
+- 迁移已到 **v11**；`db.py roundtrip` 是「up→down→up 指纹一致」的硬门槛。
+- 新增业务表必须同步 `tests/test_migrations.py` 的 `BUSINESS_TABLES`（现含 `fba_rate_version`）。
 - 表级 `CHECK` **不能跨行查询**，所以区间重叠只能靠 `audit()` 检出，别假装数据库能拦。
-- `fba_fee_schedule` 现有维度：marketplace / size_tier / weight / price_band / season。
-  **缺 product_class（服装/非服装/危险品）与费率版本两维**，官方 2026 与 2027 两套费率无法共存。
+- FBA 费率已版本化（m0010/m0011）：`fba_rate_version`（生效区间）+ `fba_fee_schedule`
+  （version_key / size_tier / product_class / weight / price_band）。行上**不再存** season 与
+  effective_date——版本是唯一真相源，别再往行上加回冗余字段。
+- `product_class` 与 `size_tier` 一样没有默认值：官方三套表差 18.8–25.9%，猜错静默低估 $1.16/件。
+- 费率期不按年份切（2026 旺季算到 2027-01-14，2027 旺季官方未发布）。判断「哪一期」只能按
+  发货日期落在哪个版本的闭区间，不能按 `season` 或年份字面值。
