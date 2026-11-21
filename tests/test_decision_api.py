@@ -104,15 +104,15 @@ def test_unknown_category_yields_need_more_info(client):
 
 
 def test_seed_category_is_blocked_by_draft_rules(client):
-    """当前种子的无线充电器规则含 2 条 draft blocker → 必须 NO_GO。
+    """当前种子仍有未核实的 blocker（FCC ID 标注取决于产品是否含发射机）→ 必须 NO_GO。
 
-    这条断言是「不许编数」在接口层的样子：规则没核实，就不给绿灯。
+    这条断言是「不许编数」在接口层的样子：只要还差一条没核实的阻断项，就不给绿灯。
     """
     body = _post(client, VALID).json()
     assert body["compliance"]["status"] == "blocked"
     assert body["verdict"] == "NO_GO"
     assert len(body["compliance"]["blockers"]) == 2
-    assert all(not hit["verified"] for hit in body["compliance"]["blockers"])
+    assert sum(1 for hit in body["compliance"]["blockers"] if not hit["verified"]) == 1
 
 
 # ---------- 入参校验 ----------

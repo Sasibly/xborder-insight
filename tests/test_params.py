@@ -112,10 +112,15 @@ def test_db_rejects_unknown_unit(conn):
 
 
 def test_compliance_rule_also_requires_source(conn):
+    """合规规则的来源约束与成本参数同源。挑一条 draft 规则来试，
+    避免把测试绑死在某个具体 rule_key 的当前状态上。"""
+    draft_key = conn.execute(
+        "SELECT rule_key FROM compliance_rules WHERE status = 'draft' LIMIT 1"
+    ).fetchone()[0]
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "UPDATE compliance_rules SET status = 'verified' "
-            "WHERE rule_key = 'us.radio.equipment_authorization'"
+            "UPDATE compliance_rules SET status = 'verified' WHERE rule_key = ?",
+            (draft_key,),
         )
 
 
@@ -144,7 +149,10 @@ def test_coverage_reports_honest_numbers(conn):
 
 
 def test_compliance_rules_hide_draft_by_default(conn):
-    assert params.compliance_rules(conn, "wireless_charger", MARKET) == []
-    drafts = params.compliance_rules(conn, "wireless_charger", MARKET, include_draft=True)
-    assert len(drafts) >= 1
-    assert all(row["status"] == params.DRAFT for row in drafts)
+    """默认只返回已核实的规则；include_draft 才把待核实项一并带出。"""
+    verified_only = params.compliance_rules(conn, "wireless_charger", MARKET)
+    assert all(row["status"] == params.VERIFIED for row in verified_only)
+
+    with_drafts = params.compliance_rules(conn, "wireless_charger", MARKET, include_draft=True)
+    assert len(with_drafts) > len(verified_only)
+    assert any(row["status"] == params.DRAFT for row in with_drafts)

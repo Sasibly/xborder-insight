@@ -82,6 +82,21 @@ class ParamUnverified(AppError):
     status_code = 503
 
 
+class ParamOutOfRange(AppError):
+    """参数已核实，但本次要评估的取值落在它声明的适用区间之外。
+
+    为什么不合并进 ParamUnverified：「没查到」和「查到了但不管用」是两种事，
+    需要的动作完全不同——前者去补来源，后者去补该区间的参数或改口径。
+    合成一个码会让后者被当成「再多找找就能解决」。
+
+    用 422 而非 503：这是本次输入与参数适用面的错配，换一个取值区间或
+    补一条对应区间的参数即可，重试同样的请求不会变好。
+    """
+
+    code = "param_out_of_range"
+    status_code = 422
+
+
 class DbNotReady(AppError):
     """数据库还没初始化（未执行迁移）。
 

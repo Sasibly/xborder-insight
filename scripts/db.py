@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
-from xborder_insight.db.params import coverage  # noqa: E402
+from xborder_insight.db.params import coverage, list_params  # noqa: E402
 
 
 def _dump_status(conn) -> int:
@@ -44,16 +44,23 @@ def _dump_status(conn) -> int:
 
 def _dump_params(conn) -> int:
     info = coverage(conn)
+    ranged = {p.param_key: p for p in list_params(conn) if p.has_range}
     print(f"成本参数核实进度  市场={info['marketplace']}")
     print("-" * 58)
     print(f"  总数 {info['total']} 项 · 已核实 {info['verified']} · 待核实 {info['draft']}")
     if info["verified"]:
-        print(f"  已核实：{', '.join(info['verified_keys'])}")
+        print("  已核实：")
+        for key in info["verified_keys"]:
+            param = ranged.get(key)
+            suffix = f"   区间 {param.range_label}" if param else "   区间 全区间"
+            print(f"    · {key}{suffix}")
     if info["missing_keys"]:
         print("  待核实：")
         for key in info["missing_keys"]:
             print(f"    · {key}")
+    print(f"\n  已声明适用区间 {len(ranged)} 项 / 共 {info['total']} 项")
     print("\n注：未核实的参数无法被业务代码使用（require() 会抛 param_unverified）。")
+    print("    声明了区间的参数，若 require() 的 applied_to 越界会抛 param_out_of_range。")
     return 0
 
 

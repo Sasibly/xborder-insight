@@ -359,7 +359,7 @@ F1 从 **0.6070 掉到 0.3858**（Recall 0.5163 → 0.2663），失败样本集�
   "verdict": "NO_GO",
   "headline": "存在阻断级合规要求，当前不能上架（其中含未核实项，核实后可能解除）",
   "profit": {"gross_margin": 0.312382, "breakeven_acos": 0.312382},
-  "compliance": {"status": "blocked", "draft_rules": 4}
+  "compliance": {"status": "blocked", "draft_rules": 3}
 }
 ```
 
@@ -549,7 +549,7 @@ local 目标 15 项断言，docker 目标 17 项（多「非 root」与「HEALTH
 
 ```
 01 /health 存活                          {"status":"ok","run_mode":"mock"}
-02 /ready 就绪且 schema 与源码一致        schema=v6 auth=required
+02 /ready 就绪且 schema 与源码一致        schema=v8 auth=required
 03 /ready 回报 auth=required
 04 无密钥访问 /v1/jobs → 401 + WWW-Authenticate
 05 创建租户密钥                           tenant=smoke-a / smoke-b
@@ -588,7 +588,7 @@ AUTH_REQUIRED=false 起服务 → 第 03、04 项变红，退出码 1
 17 项全过（docker 目标）。默认基础镜像 python:3.13-slim 与 MCR devcontainers 各跑一遍，均为 17/17、EXIT=0：
 
 01 /health 存活                          {"status":"ok","run_mode":"mock"}
-02 /ready 就绪且 schema 与源码一致        schema=v6 auth=required
+02 /ready 就绪且 schema 与源码一致        schema=v8 auth=required
 03 /ready 回报 auth=required
 04 无密钥访问 /v1/jobs → 401 + WWW-Authenticate
 05 创建租户密钥（容器内执行 CLI）          tenant=smoke-a / smoke-b
@@ -675,7 +675,7 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 | 门禁不是测试岗 | 门禁只能证明「没变差」，不能证明「覆盖了没见过的输入」 | 新场景靠 bad case 回流队列（P4）补进 gold set |
 | 成本参数全未核实 | 11 项成本参数均为 draft，value 为空 | 内置参数不可用于计算；决策接口改由调用方提供成本档案，参数表只作为「待核实清单」 |
 | FBA 费装不进单行参数 | 官方费率是四维函数（尺寸段 × 重量段 × 价格带 × 旺季），`cost_params.value` 只能存标量 | 暂由调用方按实际情景查表后填入 `fba_fee`；后续需建 `fba_fee_schedule` 维表。详见 `docs/04` |
-| 合规规则全未核实 | 4 条规则全为 draft，其中 2 条 blocker | 无线充电器 × 美国当前只会返回 `NO_GO`，这是有意的 |
+| 合规规则部分核实 | 4 条中 1 条已核实（FCC Part 18 + SDoC），3 条仍 draft，其中 1 条 blocker | 无线充电器 × 美国当前仍返回 `NO_GO`：`clear` 要求**全部**规则已核实，部分核实不等于没问题 |
 | 佣金未按退货比例退回 | 模型按全额计佣金，退货运费与管理费也按全额摊 | 对退货的估计**偏保守**，退货率越高真实毛利略高于模型值；已在 `assumptions` 声明 |
 | 限流是固定窗口 | 每分钟一个桶，窗口边界最多可突发 2 倍额度 | 精确需要滑动窗口（按请求落行）或令牌桶；当前量级下不值得多写一张表，已在注释与本表说明 |
 | 配额是软限 | 只按已记账的 token 判，正在跑的任务可能把余额用穿 | 有意取舍：中途杀掉正在跑的任务，损失大于超一点额 |
@@ -708,7 +708,9 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 ## 下一步
 
 1. **补齐成本参数**：佣金率需先确认类目归属（Electronics Accessories 15% vs Consumer Electronics 8%，差 7 个点）；FBA 费需建维表；关税需确认全部 Chapter 99 附加税号。查证记录见 `docs/04-成本参数口径.md`
-2. **核实合规规则**：4 条规则全为 draft，其中 2 条 blocker。核实前该品类只会返回 `NO_GO`
+2. **核实合规规则**（部分完成）：FCC 授权路径已核实为 Part 18 + SDoC 并置 `verified`；
+   FCC ID 标注因「是否含独立发射机」属产品事实而保持 draft；安全检测与 Qi 认证待查。
+   见 `docs/04` 第 7 节
 3. ~~在启动 Docker 的机器上跑一次 `make smoke-docker`~~ **已完成（11-19）**：官方 `python:3.13-slim`
    经 AWS ECR Public 取得，17/17、EXIT=0
 4. ~~接入真实 embedding 并重标定阈值~~ **已完成**：`DashScopeEmbedder` 已接入。2026-11-21 扩到 216 条 / 6 品类 / 354 对重标定，阈值 0.65 → **0.72**（ARI 0.240 → 0.357，bootstrap CI [0.68,0.74]），

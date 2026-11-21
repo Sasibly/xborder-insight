@@ -22,6 +22,8 @@ from . import (
     m0004_jobs,
     m0005_auth,
     m0006_jobs_archive,
+    m0007_params_range,
+    m0008_official_verification,
 )
 
 
@@ -44,6 +46,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "jobs", m0004_jobs.up, m0004_jobs.down),
     Migration(5, "auth", m0005_auth.up, m0005_auth.down),
     Migration(6, "jobs_archive", m0006_jobs_archive.up, m0006_jobs_archive.down),
+    Migration(7, "params_range", m0007_params_range.up, m0007_params_range.down),
+    Migration(8, "official_verification", m0008_official_verification.up,
+              m0008_official_verification.down),
 )
 
 BY_VERSION: dict[int, Migration] = {m.version: m for m in MIGRATIONS}

@@ -95,18 +95,19 @@ def test_draft_warning_prevents_clear():
 
 
 def test_seed_rules_produce_expected_state(conn):
-    """当前种子数据（4 条规则全部 draft、含 2 条 blocker）应判定为 blocked。
+    """当前种子：4 条规则，1 条已核实（FCC Part 18 + SDoC）、3 条 draft，含 2 条 blocker。
 
-    这条同时锁住一个现实：在规则核实之前，这个品类不可能拿到 GO。
-    如果哪天有人为了让接口返回 GO 而把状态改成 verified，这里会照常通过，
-    但 docs/04 的核实纪律会拦住他——所以两处都要看。
+    仍然 blocked——核实一条 blocker 不等于解除阻断。`clear` 要求**全部**规则
+    已核实，这是有意的：部分核实不等于没有问题。
+    这条同时锁住一个现实：只要还有未核实的 blocker，这个品类就拿不到 GO。
     """
     result = load(conn, CAT, MARKET)
 
     assert result.status == STATUS_BLOCKED
     assert len(result.blockers) == 2
-    assert result.draft_count == 4
-    assert all(not hit.verified for hit in result.blockers)
+    assert result.verified_count == 1
+    assert result.draft_count == 3
+    assert sum(1 for hit in result.blockers if not hit.verified) == 1
 
 
 def test_unknown_category_from_db(conn):
