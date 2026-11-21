@@ -1,25 +1,36 @@
-"""聚类阈值标定：在同一份标注集上，比较 embedder 与分组键，扫出阈值。
+"""聚类阈值标定（v2）：在生产分组口径下比较向量与阈值。
 
-为什么必须先有标注才能换 embedding：
-「把阈值从 0.28 改到 0.6」这句话本身没有信息量——它没说清依据。
-标注集把这件事变成一个可证伪的问题：给定同一个分区任务，
-哪种向量、哪个阈值、哪种分组键，pairwise F1 最高。
+## v2 相对 v1 改了什么，为什么
 
-三个变量，各自独立验证：
-  向量    hash（字符 3-gram） / dashscope（text-embedding-v3）
-  分组键  label / label+polarity
-  阈值    0.10 ~ 0.95
+v1 在 51 条 evidence / 2 品类上标定出 0.65。扩到 216 条 / 6 品类后，两个前提塌了：
 
-口径：
-- pairwise 判定，micro 平均。同簇 = 判为同一主题。
-- 只在「组内至少 2 条」的组上算，跨组对不参与——生产里聚类就是组内独立的，
-  把跨组对算进来等于评一个根本不会发生的场景。
-- 向量结果缓存到 data/eval/vectors_<provider>.npy，标定反复跑不重复花钱。
+1. **分组口径**。v1 按 label 分组（跨品类）。但生产 `analyze_reviews` 一次只处理
+   一个 dataset，聚类天然限定在单品类内。按 label 跨品类分组会把「无线充充电慢」
+   和「咖啡机出水慢」放进同一组——评的是一个不会发生的场景。
+   v2 按 (dataset, label, polarity) 分组，与生产逐字一致。
+
+2. **「多品类的 label 语义会漂移」**。同一 label 在不同品类下指不同物理量：
+   charging_speed 在无线充上是「充电慢」，在咖啡机上变成「出水慢」，在扫地机上
+   变成「吸力弱」。这是分类体系跨品类复用的固有问题，靠分组隔离开，不靠算法解决。
+
+## 三个候选向量
+
+    hash      字符 3-gram，离线占位实现
+    v3@512    text-embedding-v3，v1 标定用的就是它
+    v4@1024   text-embedding-v4
+
+v4 实测比 v3 更差（同/异主题分离度 -0.241 vs -0.161），留着是为了让这个结论可复现。
+
+## 指标
+
+- **pairwise F1**：同主题即同簇，micro 平均。
+- **ARI**：pairwise F1 对「全合并」有系统性偏袒——全合并时 recall 恒为 1.0，
+  F1 取决于样本里正例占比。ARI 修正了随机期望，全合并会被判成接近 0。
+  在细粒度标注下 ARI 是主指标，F1 只作参考。
 
 用法：
-    python scripts/calibrate_cluster.py                  # 两个向量都跑
-    python scripts/calibrate_cluster.py --provider hash  # 只跑离线向量
-    python scripts/calibrate_cluster.py --no-cache       # 强制重算向量
+    python scripts/calibrate_cluster.py
+    python scripts/calibrate_cluster.py --provider v3 --no-cache
 """
 
 from __future__ import annotations
@@ -35,18 +46,26 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-EVIDENCE = ROOT / "data" / "eval" / "cluster_evidence_live.jsonl"
+EVIDENCE = ROOT / "data" / "eval" / "cluster_evidence.jsonl"
 PAIRS = ROOT / "data" / "eval" / "cluster_pairs.jsonl"
 CACHE_DIR = ROOT / "data" / "eval"
 REPORT = ROOT / "reports" / "cluster_calibration.json"
+
+PROVIDERS = {
+    "hash": "离线 · 字符 3-gram",
+    "v3": "text-embedding-v3 · 512 维",
+    "v4": "text-embedding-v4 · 1024 维",
+}
 
 
 # ---------------------------------------------------------------- 向量
 
 
 def _hash_encode(texts: list[str], dim: int = 512) -> np.ndarray:
-    """与 pipeline/cluster.py 的 HashEmbedder 逐位等价，此处复制一份是为了
-    标定脚本不依赖 Settings（避免为了跑实验去改环境变量）。"""
+    """与 pipeline/cluster.py 的 HashEmbedder 逐位等价。
+
+    刻意复制一份：标定脚本要能在生产实现被改坏时仍给出可对照的尺子。
+    """
     import zlib
 
     matrix = np.zeros((len(texts), dim), dtype=np.float32)
@@ -62,17 +81,16 @@ def _hash_encode(texts: list[str], dim: int = 512) -> np.ndarray:
     return matrix / norms
 
 
-def _dashscope_encode(texts: list[str], dim: int = 512, batch: int = 10) -> np.ndarray:
+def _api_encode(texts: list[str], model: str, dim: int, batch: int = 10) -> np.ndarray:
     import httpx
 
     key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("LLM_API_KEY")
     if not key:
         raise SystemExit("需要 DASHSCOPE_API_KEY 或 LLM_API_KEY")
     base = os.environ.get("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    model = os.environ.get("EMBEDDING_MODEL", "text-embedding-v3")
 
     out: list[list[float]] = []
-    with httpx.Client(timeout=60) as client:
+    with httpx.Client(timeout=90) as client:
         for start in range(0, len(texts), batch):
             chunk = texts[start : start + batch]
             response = client.post(
@@ -82,8 +100,7 @@ def _dashscope_encode(texts: list[str], dim: int = 512, batch: int = 10) -> np.n
             )
             response.raise_for_status()
             data = response.json()["data"]
-            # 官方接口按 index 字段标明顺序，不能依赖返回顺序
-            data.sort(key=lambda d: d["index"])
+            data.sort(key=lambda d: d["index"])  # 官方接口按 index 标明顺序
             out.extend(item["embedding"] for item in data)
     matrix = np.asarray(out, dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -96,12 +113,17 @@ def get_vectors(provider: str, texts: list[str], no_cache: bool) -> np.ndarray:
     if cache.exists() and not no_cache:
         cached = np.load(cache)
         if cached.shape[0] == len(texts):
-            print(f"  向量 {provider:10s} 用缓存 {cache.name} {cached.shape}")
+            print(f"  向量 {provider:6s} 用缓存 {cache.name} {cached.shape}")
             return cached
-    print(f"  向量 {provider:10s} 现算（{len(texts)} 条）…")
-    matrix = _hash_encode(texts) if provider == "hash" else _dashscope_encode(texts)
+    print(f"  向量 {provider:6s} 现算（{len(texts)} 条）…")
+    if provider == "hash":
+        matrix = _hash_encode(texts)
+    elif provider == "v3":
+        matrix = _api_encode(texts, "text-embedding-v3", 512)
+    else:
+        matrix = _api_encode(texts, "text-embedding-v4", 1024)
     np.save(cache, matrix)
-    print(f"  向量 {provider:10s} {matrix.shape} 已缓存")
+    print(f"  向量 {provider:6s} {matrix.shape} 已缓存")
     return matrix
 
 
@@ -109,11 +131,7 @@ def get_vectors(provider: str, texts: list[str], no_cache: bool) -> np.ndarray:
 
 
 def greedy_cluster(vectors: np.ndarray, threshold: float) -> list[int]:
-    """与 pipeline/cluster.py 完全一致的贪心合并（含增量更新质心）。
-
-    刻意不 import 原函数：标定脚本要能在原函数被改坏时仍然给出可对照的结果，
-    相当于给生产实现配了一把独立的尺子。
-    """
+    """与 pipeline/cluster.py 一致的贪心合并（含增量质心更新）。"""
     if len(vectors) == 0:
         return []
     centroids: list[np.ndarray] = []
@@ -136,39 +154,11 @@ def greedy_cluster(vectors: np.ndarray, threshold: float) -> list[int]:
     return assignments
 
 
-# ---------------------------------------------------------------- 评测
-
-
-def load_data():
-    evidence = [
-        json.loads(line)
-        for line in EVIDENCE.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    pairs = [
-        json.loads(line)
-        for line in PAIRS.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    return evidence, pairs
-
-
-def build_groups(evidence: list[dict], key: str) -> dict[str, list[int]]:
-    """key = 'label' | 'label+polarity'；值为 evidence 全局下标的列表。"""
-    groups: dict[str, list[int]] = {}
-    for idx, row in enumerate(evidence):
-        gk = row["label"] if key == "label" else f"{row['label']}::{row['polarity']}"
-        groups.setdefault(gk, []).append(idx)
-    return groups
+# ---------------------------------------------------------------- 指标
 
 
 def _ari(gold: list[str], pred: list[str]) -> float:
-    """调整兰德指数，无 sklearn 实现。
-
-    为什么必须有它：pairwise F1 对「每题合并不管」有系统性偏袒——全部合并时
-    recall 恒为 1.0，而 precision 只受样本里正对占比影响，F1 会稳定在一个不低的
-    水平。ARI 修正了随机分区的期望，全合并会被明确判成接近 0。
-    """
+    """调整兰德指数（无 sklearn 实现）。"""
     n = len(gold)
     if n < 2:
         return 1.0
@@ -192,90 +182,86 @@ def _ari(gold: list[str], pred: list[str]) -> float:
     return (sum_ij - expected) / (max_index - expected)
 
 
-def _gold_partition(pairs: list[dict], size: int) -> list[str]:
-    """同主题标注的连通分量。簇数就是「这段数据本来就该分成几个主题」。"""
-    parent = list(range(size))
+def load_data():
+    evidence = [
+        json.loads(line)
+        for line in EVIDENCE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    pairs = [
+        json.loads(line)
+        for line in PAIRS.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    return evidence, pairs
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
 
+def evaluate(evidence: list[dict], pairs: list[dict], vectors: np.ndarray, threshold: float) -> dict:
+    """按 pairs 的 group 字段分组聚类，再统计。
+
+    组的成员下标来自 pair 里出现的 evidence 序号，因此只有「至少产生一对」的
+    组会进入评测——单条组派生不出 pair，也就无从评测（它们对 pair F1 也无贡献）。
+    """
+    group_members: dict[str, set[int]] = {}
+    pair_indices: list[tuple[str, int, int, bool]] = []
     for pair in pairs:
-        if pair["same"]:
-            ra, rb = find(pair["a_idx"]), find(pair["b_idx"])
-            if ra != rb:
-                parent[ra] = rb
-    return [f"g{find(i)}" for i in range(size)]
+        group_members.setdefault(pair["group"], set()).update({pair["a_idx"], pair["b_idx"]})
+        pair_indices.append((pair["group"], pair["a_idx"], pair["b_idx"], pair["same"]))
 
-
-def evaluate(
-    evidence: list[dict],
-    pairs: list[dict],
-    vectors: np.ndarray,
-    group_key: str,
-    threshold: float,
-) -> dict:
-    groups = build_groups(evidence, group_key)
-    # 全局下标 → 簇号（不同组的簇号天然不冲突，因为组内独立）
-    assign: dict[int, str] = {}
-    n_clusters = 0
-    for gk, members in groups.items():
-        if len(members) < 2:
-            for m in members:
-                assign[m] = f"{gk}#solo{m}"
+    assign: dict[tuple[str, int], int] = {}
+    pred_clusters_total = 0
+    for group, members in group_members.items():
+        first = next(p for p in pairs if p["group"] == group)
+        label = first["label"]
+        polarity = first["a_polarity"]
+        global_idx = sorted(
+            i
+            for i, row in enumerate(evidence)
+            if row["dataset"] == first["dataset"]
+            and row["label"] == label
+            and row["polarity"] == polarity
+        )
+        if len(global_idx) < 2:
             continue
-        local = greedy_cluster(vectors[members], threshold)
-        n_clusters += max(local) + 1
-        for m, c in zip(members, local):
-            assign[m] = f"{gk}#{c}"
-
-    # gold 侧用 (label, 全局下标) 定位；标注是按组内顺序生成的，需还原
-    label_pos: dict[str, list[int]] = {}
-    for idx, row in enumerate(evidence):
-        label_pos.setdefault(row["label"], []).append(idx)
-    label_pairs: dict[str, list[dict]] = {}
-    for pair in pairs:
-        label_pairs.setdefault(pair["label"], []).append(pair)
+        local = greedy_cluster(vectors[global_idx], threshold)
+        pred_clusters_total += max(local) + 1
+        for pos, g in enumerate(global_idx):
+            assign[(group, pos)] = local[pos]
 
     tp = fp = fn = 0
-    for pair in pairs:
-        gi = label_pos[pair["label"]][pair["a_idx"]]
-        gj = label_pos[pair["label"]][pair["b_idx"]]
-        pred_same = assign[gi] == assign[gj]
-        if pred_same and pair["same"]:
+    for group, a_idx, b_idx, same in pair_indices:
+        pred_same = assign.get((group, a_idx)) == assign.get((group, b_idx))
+        if pred_same and same:
             tp += 1
-        elif pred_same and not pair["same"]:
+        elif pred_same and not same:
             fp += 1
-        elif not pred_same and pair["same"]:
+        elif not pred_same and same:
             fn += 1
 
-    # ARI 按 label 组独立算再按 pair 数加权：group_key=label+polarity 时，
-    # pred 会比 gold 细（正负拆开），而 gold 里跨极性对全是「不同主题」，
-    # 所以拆开是对的，ARI 会如实给分而不是惩罚它。
     ari_sum = 0.0
     ari_weight = 0
-    gold_clusters = pred_clusters = 0
-    for label, members_global in label_pos.items():
-        if len(members_global) < 2:
-            gold_clusters += 1
-            pred_clusters += 1
+    gold_clusters = 0
+    by_group: dict[str, list[dict]] = {}
+    for pair in pairs:
+        by_group.setdefault(pair["group"], []).append(pair)
+    for group, items in by_group.items():
+        members = sorted({i for p in items for i in (p["a_idx"], p["b_idx"])})
+        if len(members) < 2:
             continue
-        gold_local = _gold_partition(label_pairs.get(label, []), len(members_global))
-        pred_local = [assign[m] for m in members_global]
+        themes = {}
+        for p in items:
+            themes[p["a_idx"]] = p["a_theme"]
+            themes[p["b_idx"]] = p["b_theme"]
+        gold_local = [themes[i] for i in members]
+        pred_local = [assign.get((group, members.index(i)), -1) for i in members]
         gold_clusters += len(set(gold_local))
-        pred_clusters += len(set(pred_local))
-        weight = len(label_pairs.get(label, []))
-        ari_sum += _ari(gold_local, pred_local) * weight
-        ari_weight += weight
-    ari = ari_sum / ari_weight if ari_weight else 0.0
+        ari_sum += _ari(gold_local, [str(x) for x in pred_local]) * len(items)
+        ari_weight += len(items)
 
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {
-        "group_key": group_key,
         "threshold": round(threshold, 3),
         "tp": tp,
         "fp": fp,
@@ -283,26 +269,33 @@ def evaluate(
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
-        "ari": round(ari, 4),
-        "clusters": n_clusters,
-        "gold_clusters": gold_clusters,
-        "pred_clusters": pred_clusters,
+        "ari": round(ari_sum / ari_weight if ari_weight else 0.0, 4),
+        "components": pred_clusters_total,
+        "gold_components": gold_clusters,
     }
 
 
-def separation(evidence: list[dict], pairs: list[dict], vectors: np.ndarray) -> dict:
-    """同主题对 vs 不同主题对的余弦分布。这是「哪个阈值合理」的原始依据——
-    阈值的最优位置就在两个分布的重叠区，F1 只是这件事的汇总。"""
-    label_pos: dict[str, list[int]] = {}
-    for idx, row in enumerate(evidence):
-        label_pos.setdefault(row["label"], []).append(idx)
+def separation(pairs: list[dict], vectors: np.ndarray, evidence: list[dict]) -> dict:
+    """同主题对 vs 不同主题对的余弦分布——阈值该定在哪的原始依据。"""
+    pos_of: dict[tuple[str, int], int] = {}
+    for group in {p["group"] for p in pairs}:
+        first = next(p for p in pairs if p["group"] == group)
+        global_idx = sorted(
+            i
+            for i, row in enumerate(evidence)
+            if row["dataset"] == first["dataset"]
+            and row["label"] == first["label"]
+            and row["polarity"] == first["a_polarity"]
+        )
+        for pos, gi in enumerate(global_idx):
+            pos_of[(group, pos)] = gi
 
     same_sims, diff_sims = [], []
-    for pair in pairs:
-        gi = label_pos[pair["label"]][pair["a_idx"]]
-        gj = label_pos[pair["label"]][pair["b_idx"]]
-        sim = float(vectors[gi] @ vectors[gj])
-        (same_sims if pair["same"] else diff_sims).append(sim)
+    for p in pairs:
+        a = pos_of[(p["group"], p["a_idx"])]
+        b = pos_of[(p["group"], p["b_idx"])]
+        sim = float(vectors[a] @ vectors[b])
+        (same_sims if p["same"] else diff_sims).append(sim)
 
     def q(values: list[float]) -> dict:
         if not values:
@@ -313,11 +306,8 @@ def separation(evidence: list[dict], pairs: list[dict], vectors: np.ndarray) -> 
             "p10": round(float(np.percentile(arr, 10)), 4),
             "p50": round(float(np.percentile(arr, 50)), 4),
             "p90": round(float(np.percentile(arr, 90)), 4),
-            "min": round(float(arr.min()), 4),
-            "max": round(float(arr.max()), 4),
         }
 
-    # 重叠区：同主题的低分位与不同主题的高分位之差。为正是可分，为负是重叠
     overlap = None
     if same_sims and diff_sims:
         overlap = round(
@@ -326,26 +316,13 @@ def separation(evidence: list[dict], pairs: list[dict], vectors: np.ndarray) -> 
     return {"same": q(same_sims), "diff": q(diff_sims), "separation_at_p10_p90": overlap}
 
 
-def scan(evidence, pairs, vectors, group_key: str, grid: np.ndarray) -> list[dict]:
-    return [evaluate(evidence, pairs, vectors, group_key, float(t)) for t in grid]
-
-
 def best_of(rows: list[dict]) -> dict:
-    """按 ARI 选阈值，F1 只作次键。
-
-    不用 F1 做主键的原因在数据里：全合并时 R=1.0，F1 能到 0.87，看起来很好，
-    但那时「每个 label 组只出一个主题」——聚类等于没做。ARI 修正了随机分区的
-    期望，全合并会被判成接近 0，这个假象就消失了。
-    F1 作次键、阈值作第三键（并列取高）：宁可少合并也不错合并。
-    """
+    """按 ARI 选阈值，F1 次键，阈值第三键（并列取高：宁可少合并）。"""
     return max(rows, key=lambda r: (r["ari"], r["f1"], r["threshold"]))
 
 
 def plateau(rows: list[dict], best: dict, tol: float = 0.02) -> tuple[float, float] | None:
-    """ARI 在最优值 tol 以内的连续阈值区间。
-
-    区间宽 = 阈值不敏感，选起来安全；区间窄 = 这个最优点很可能是标注噪声。
-    """
+    """ARI 在最优值 tol 以内的连续阈值区间。区间宽度就是「能定到几位」的上限。"""
     by_t = sorted(rows, key=lambda r: r["threshold"])
     i = next(k for k, r in enumerate(by_t) if r["threshold"] == best["threshold"])
     lo = hi = best["threshold"]
@@ -361,63 +338,56 @@ def plateau(rows: list[dict], best: dict, tol: float = 0.02) -> tuple[float, flo
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="聚类阈值标定")
-    parser.add_argument("--provider", default="both", choices=["hash", "dashscope", "both"])
-    parser.add_argument("--no-cache", action="store_true", help="强制重算向量")
+    parser = argparse.ArgumentParser(description="聚类阈值标定 v2")
+    parser.add_argument("--provider", default="all", choices=["hash", "v3", "v4", "all"])
+    parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--step", type=float, default=0.02)
     args = parser.parse_args()
 
     evidence, pairs = load_data()
     texts = [row["evidence"] for row in evidence]
-    print(f"标注集：{len(evidence)} 条 evidence · {len(pairs)} 对（同 "
-          f"{sum(1 for p in pairs if p['same'])} / 异 {len(pairs) - sum(1 for p in pairs if p['same'])}）")
+    same_n = sum(1 for p in pairs if p["same"])
+    print(f"标注集：{len(evidence)} 条 evidence · {len(pairs)} 对"
+          f"（同 {same_n} / 异 {len(pairs) - same_n}）· "
+          f"{len({p['group'] for p in pairs})} 组")
 
-    providers = ["hash", "dashscope"] if args.provider == "both" else [args.provider]
+    providers = list(PROVIDERS) if args.provider == "all" else [args.provider]
     grid = np.arange(0.10, 0.96, args.step)
-
     report: dict = {"evidence_count": len(evidence), "pair_count": len(pairs), "runs": {}}
 
     for provider in providers:
         try:
             vectors = get_vectors(provider, texts, args.no_cache)
-        except Exception as exc:  # 网络/额度问题不该让整个标定崩掉
+        except Exception as exc:
             print(f"  !! {provider} 向量失败：{exc}")
             continue
 
-        sep = separation(evidence, pairs, vectors)
-        print(f"\n{'=' * 66}\n向量 {provider}")
-        print(f"  同主题对   n={sep['same']['n']:3d}  P10 {sep['same']['p10']:.3f}  "
+        sep = separation(pairs, vectors, evidence)
+        print(f"\n{'=' * 70}\n向量 {provider}（{PROVIDERS[provider]}）")
+        print(f"  同主题   n={sep['same']['n']:3d}  P10 {sep['same']['p10']:.3f}  "
               f"P50 {sep['same']['p50']:.3f}  P90 {sep['same']['p90']:.3f}")
-        print(f"  不同主题对 n={sep['diff']['n']:3d}  P10 {sep['diff']['p10']:.3f}  "
+        print(f"  不同主题 n={sep['diff']['n']:3d}  P10 {sep['diff']['p10']:.3f}  "
               f"P50 {sep['diff']['p50']:.3f}  P90 {sep['diff']['p90']:.3f}")
-        print(f"  分离度(P10同 - P90异) {sep['separation_at_p10_p90']:+.3f}"
-              f"{'  ← 有重叠，单阈值不可能全对' if sep['separation_at_p10_p90'] < 0 else '  ← 无重叠，可完美分开'}")
+        mark = "← 有重叠，单阈值不可能全对" if sep["separation_at_p10_p90"] < 0 else "← 无重叠"
+        print(f"  分离度（同P10 - 异P90）{sep['separation_at_p10_p90']:+.3f}  {mark}")
 
-        for group_key in ("label", "label+polarity"):
-            rows = scan(evidence, pairs, vectors, group_key, grid)
-            best = best_of(rows)
-            band = plateau(rows, best)
-            print(f"\n  分组键 {group_key}")
-            print(f"    最优阈值 {best['threshold']:.2f}  ARI {best['ari']:.3f}  "
-                  f"P {best['precision']:.3f}  R {best['recall']:.3f}  F1 {best['f1']:.3f}")
-            print(f"    簇数 预测 {best['pred_clusters']} vs gold {best['gold_clusters']}"
-                  f"（差 {best['pred_clusters'] - best['gold_clusters']:+d}）")
-            if band:
-                print(f"    ARI 平台区 [{band[0]:.2f}, {band[1]:.2f}]"
-                      f"（宽 {(band[1] - band[0]):.2f}，越宽越不敏感）")
-            # 打印关键阈值附近的 ARI，让人看见曲线形状而不是只看一个点
-            marks = [0.20, 0.28, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.80]
-            cells = []
-            for m in marks:
-                hit = min(rows, key=lambda r: abs(r["threshold"] - m))
-                cells.append(f"{m:.2f}:{hit['ari']:.2f}/{hit['pred_clusters']}")
-            print("    阈值:" + "  ".join(cells))
-            report["runs"][f"{provider}|{group_key}"] = {
-                "separation": sep,
-                "best": best,
-                "plateau": band,
-                "curve": rows,
-            }
+        rows = [evaluate(evidence, pairs, vectors, float(t)) for t in grid]
+        best = best_of(rows)
+        band = plateau(rows, best)
+        print(f"\n  最优阈值 {best['threshold']:.2f}  ARI {best['ari']:.3f}  "
+              f"P {best['precision']:.3f}  R {best['recall']:.3f}  F1 {best['f1']:.3f}")
+        print(f"  簇数 预测 {best['components']} vs gold {best['gold_components']}")
+        if band:
+            print(f"  ARI 平台区 [{band[0]:.2f}, {band[1]:.2f}]（宽 {band[1] - band[0]:.2f}）")
+
+        marks = [0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+        cells = []
+        for m in marks:
+            hit = min(rows, key=lambda r: abs(r["threshold"] - m))
+            cells.append(f"{m:.2f}:{hit['ari']:.2f}/{hit['f1']:.2f}")
+        print("  阈值(ARI/F1): " + "  ".join(cells))
+
+        report["runs"][provider] = {"separation": sep, "best": best, "plateau": band, "curve": rows}
 
     REPORT.parent.mkdir(exist_ok=True)
     REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

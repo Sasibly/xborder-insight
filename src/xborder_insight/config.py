@@ -20,14 +20,21 @@ load_dotenv(ROOT_DIR / ".env")
 VALID_RUN_MODES = {"mock", "live"}
 VALID_EMBEDDING_PROVIDERS = {"hash", "dashscope"}
 
-# 每个向量后端各自的标定阈值（scripts/calibrate_cluster.py 在 120 对人工标注上扫出）。
-# 不能共用一个默认值：hash 的「同主题对」中位相似度是 0.147，「不同主题对」是 0.160——
-# 不同主题反而更相似，任何单一阈值都只能做近似随机切分；而 dashscope 的中位数分别是
-# 0.712 / 0.675，同一批数据的最优切点在 0.65 附近。把 0.28 或 0.65 写死成全局默认，
-# 必然有一半场景是错的。
+# 每个向量后端各自的标定阈值（scripts/calibrate_cluster.py 扫出）。
+# 不能共用一个默认值：hash 的相似度分布没有语义结构，「同主题对」与「不同主题对」
+# 的分布几乎重合，任何单一阈值都只能做近似随机切分；dashscope 才勉强可分。
+# 把 hash 的值硬套给 dashscope（或反之），必然有一半场景是错的。
+#
+# 2026-11-21 重标定（216 条 evidence / 6 品类 / 354 对，按生产口径
+# (dataset, label, polarity) 分组）：
+#   dashscope(text-embedding-v3@512) 最优 0.72，ARI 0.357，bootstrap 2000 次
+#     95% CI [0.68, 0.74]，0.72 出现频率最高（38%）
+#   旧值 0.65 在 0.65 处 ARI 仅 0.24 —— 落在置信区间之外，是实质性的次优，
+#     不是噪声波动。原因是旧值在 2 品类 / 120 对上标定，跨品类后同 label 内
+#     语义多样性大增，最优切点右移。
 CLUSTER_THRESHOLD_BY_PROVIDER = {
-    "hash": 0.12,
-    "dashscope": 0.65,
+    "hash": 0.14,
+    "dashscope": 0.72,
 }
 
 
