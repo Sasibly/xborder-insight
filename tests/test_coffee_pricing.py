@@ -104,8 +104,8 @@ def test_same_sku_three_readings(conn):
     ("duty", "margin"),
     [
         (0.000, 0.18735),  # 有 FTA 或豁免时的上界
-        (0.162, 0.14052),  # 已确认下限：MFN 3.7% + 301 强迫劳动 12.5%
-        (0.237, 0.11884),  # 最可能：再加 301 List 4A 的 7.5%（待 note 20(r)）
+        (0.037, 0.17666),  # 若原产国非中国：只剩 MFN，两个 301 层都不适用
+        (0.237, 0.11884),  # 原产中国（当前口径）：3.7% + 12.5% + 7.5%
         (0.375, 0.07894),  # 若 25% 旧清单也叠加（充电器的结构，不是咖啡机）
     ],
 )
@@ -113,7 +113,8 @@ def test_duty_is_the_loudest_lever(conn, duty, margin):
     """关税 0→37.5% 掉 11 个点，比改包（+4pt）与换货代（约 +3pt）都大。
 
     所以 H8 不是「补一个参数」，它决定低价打法这条路是否存在。
-    四档都钉住，是因为 23.7% 尚未 verified——哪一档最终成立都不该让测试失效。
+    四档都钉住：23.7% 与 3.7% 是「原产国」这个二选一的两端（11-21 16:50 起，
+    中间态 16.2% 已被排除——List 4A 那层从 Chapter 99 原文核实到 8516.71.00 在内）。
     """
     _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
     assert _profit(after.low_usd, duty=duty).gross_margin == pytest.approx(margin, abs=5e-4)
@@ -138,8 +139,8 @@ def test_15pct_floor_is_6722_after_repack(conn):
     assert _solve_price(0.15, before.low_usd) == pytest.approx(71.35, abs=0.05)
     assert _solve_price(0.15, after.low_usd) == pytest.approx(67.22, abs=0.05)
     assert _solve_price(0.20, after.low_usd) == pytest.approx(73.14, abs=0.05)
-    # 若 List 4A 不适用（16.2%），15% 线降到 $64.97 —— 与 $63.99 只差 0.98
-    assert _solve_price(0.15, after.low_usd, duty=0.162) == pytest.approx(64.97, abs=0.05)
+    # 若原产国非中国（3.7%），15% 线降到 $61.23 —— 那时 $63.99 是 17.67%，反而成立
+    assert _solve_price(0.15, after.low_usd, duty=0.037) == pytest.approx(61.23, abs=0.05)
 
 
 def _dg_gap(conn, size_tier: str, weight_min: float, price_band: str, version: str) -> float:
@@ -168,3 +169,26 @@ def test_lithium_gap_is_not_a_constant(conn):
     assert large == pytest.approx(1.16, abs=0.005)
     assert bulky == pytest.approx(1.24, abs=0.005)
     assert len({small, large, bulky}) == 3, "三个档位的差价应当互不相同——这正是不能用常数的证据"
+
+
+@pytest.mark.parametrize(
+    ("freight", "margin"),
+    [(0.0, 0.21406), (3.0, 0.16649), (6.0, 0.11884), (9.0, 0.07119), (12.0, 0.02355)],
+)
+def test_freight_is_now_the_biggest_unknown(conn, freight, margin):
+    """头程每 +$1 → 毛利率 −1.59 个点；$3 与 $12 之间差 14.3 个点。
+
+    关税已收窄成二选一（23.7% / 3.7%，见 §15.4），而 inbound_freight 仍是纯假设 $6，
+    所以现在最该先去要的是货代报价，不是继续调价。这条把弹性钉住：
+    报价单一到手，改一个参数就能读出结论，不必重算整条链。
+    """
+    _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
+    assert _profit(after.low_usd, freight=freight).gross_margin == pytest.approx(margin, abs=5e-4)
+
+
+def test_one_dollar_of_freight_costs_159_basis_points(conn):
+    _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
+    step = _profit(after.low_usd, freight=7.0).gross_margin - _profit(
+        after.low_usd, freight=6.0
+    ).gross_margin
+    assert step == pytest.approx(-0.0159, abs=1e-4)
