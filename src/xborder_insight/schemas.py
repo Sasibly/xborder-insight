@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .domain.fba import PRODUCT_CLASSES, SIZE_TIERS
 from .domain.incoterm import Incoterm
 from .taxonomy import LABEL_KEYS, TAXONOMY
 
@@ -139,7 +141,16 @@ class CostProfileInput(BaseModel):
     duty_rate: float = Field(default=0.0, ge=0, le=1)
 
     referral_rate: float = Field(ge=0, le=1)
-    fba_fee: float = Field(default=0.0, ge=0)
+
+    # FBA 费：知道就给数，不知道就交给费率表算包络。**没有「默认 0」这个选项**——
+    # 标准尺寸商品的配送费在 $2.4–13.4 之间，默认 0 等于每件静默多算这么多毛利。
+    fba_fee: float | None = Field(default=None, ge=0)
+    # 算包络必需的两个维度：用哪套表（产品类别）、哪一期（发货日期）。
+    product_class: str | None = None
+    ship_date: date | None = None
+    # 「部分已知」的收窄条件：知道是标准件、知道重量上界，就不该按全表 20 lb 报区间。
+    fba_size_tiers: list[str] | None = None
+    fba_weight_range_oz: tuple[float, float] | None = None
 
     return_rate: float = Field(default=0.0, ge=0, le=1)
     returns_handling_fee: float = Field(default=0.0, ge=0)
@@ -163,6 +174,62 @@ class CostProfileInput(BaseModel):
         if normalized not in INCOTERM_ALL:
             raise ValueError(f"incoterm 只能是 {sorted(INCOTERM_ALL)} 之一，收到 {value!r}")
         return normalized
+
+    @field_validator("product_class")
+    @classmethod
+    def _known_product_class(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in PRODUCT_CLASSES:
+            raise ValueError(
+                f"product_class 只能是 {list(PRODUCT_CLASSES)} 之一，收到 {value!r}"
+                "（官方按非服装/服装/危险品分三套费率，不能默认）"
+            )
+        return value
+
+    @field_validator("fba_size_tiers")
+    @classmethod
+    def _known_size_tiers(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        unknown = [tier for tier in value if tier not in SIZE_TIERS]
+        if unknown:
+            raise ValueError(
+                f"未知的尺寸段 {unknown}，可选值 {list(SIZE_TIERS)}"
+                "（尺寸段由包装后尺寸决定，不能猜）"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _fba_must_be_resolvable(self) -> "CostProfileInput":
+        """FBA 费要么给数，要么给足算包络的条件；两条都不满足就 422。
+
+        没有第三种处理方式。历史实现把 fba_fee 默认成 0，结果是「不填 = 免费配送」，
+        毛利率比真实值高出 $2.4–13.4，而响应里没有任何标记说明这是漏填。
+        缺失必须在入参层被拒，而不是在下游被当成 0。
+        """
+        if self.fba_fee is not None:
+            return self
+
+        missing = [
+            name
+            for name, value in (("product_class", self.product_class), ("ship_date", self.ship_date))
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"未提供 fba_fee 时必须给出 {'、'.join(missing)}，"
+                "否则无法从官方费率表算费用包络；FBA 费不允许默认按 0 计"
+            )
+
+        if self.fba_weight_range_oz is not None:
+            low, high = self.fba_weight_range_oz
+            if low <= 0 or high < low:
+                raise ValueError(
+                    f"fba_weight_range_oz 不合法：{self.fba_weight_range_oz!r}，"
+                    "下界须大于 0、上界不得小于下界（单位 oz）"
+                )
+        return self
 
 
 class DecisionRequest(BaseModel):

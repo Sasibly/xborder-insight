@@ -161,6 +161,44 @@ def resolve(
     return quote
 
 
+def envelope(
+    conn: sqlite3.Connection,
+    marketplace: str,
+    *,
+    product_class: str,
+    selling_price: float,
+    ship_date: date,
+    size_tiers: tuple[str, ...] | list[str] | None = None,
+    weight_range_oz: tuple[float, float] | None = None,
+) -> fba_domain.FeeEnvelope:
+    """不知道尺寸与重量时的 FBA 费范围：读版本 + 读表 + 读燃油费率 → 算包络。
+
+    与 `resolve()` 的唯一差别是不需要精确的 `size_tier` 与 `weight_oz`。
+    代价是结果从「一个数」变成「一个区间」——这个代价是诚实的，
+    而不是把一个猜出来的数包装成一个数。
+
+    `size_tiers` / `weight_range_oz` 是部分已知时的收窄条件，透传给 domain。
+    """
+    rows = list_fee_rows(conn, marketplace)
+    versions = list_rate_versions(conn, marketplace)
+    rate, why_missing = fuel_surcharge(conn, marketplace)
+    result = fba_domain.fee_envelope(
+        rows,
+        versions,
+        product_class=product_class,
+        selling_price=selling_price,
+        ship_date=ship_date,
+        fuel_surcharge_rate=rate,
+        size_tiers=size_tiers,
+        weight_range_oz=weight_range_oz,
+    )
+    if rate is None and why_missing:
+        result = dataclasses.replace(
+            result, assumptions=result.assumptions + (why_missing,)
+        )
+    return result
+
+
 def audit(conn: sqlite3.Connection, marketplace: str = "US") -> ScheduleAudit:
     return fba_domain.audit(
         list_fee_rows(conn, marketplace),

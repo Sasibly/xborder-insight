@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..errors import InputInvalid
+from ..errors import InputInvalid, ParamUnverified
 from . import incoterm as incoterm_mod
 
 # 允许的浮点误差，避免 1.0000000002 这类输入被判非法
@@ -99,6 +99,11 @@ class CostInputs:
     quoted_price 是「按术语口径的报价」——
         FOB 下是离岸价，DDP 下是完税到门价。
     同一个数字在两种术语下代表的成本范围不同，所以术语必须与价格一起传。
+
+    `fba_fee=None` 表示「不知道这一单的 FBA 费」，此时必须给 `fba_bounds`
+    （来自 `fba.fee_envelope()` 的可证明区间），模型会把毛利率算成区间。
+    刻意**没有**默认值 0：把「不知道」写成 0，等于每件静默多赚 $2.4–8.6 的毛利，
+    而这种错误在报表上没有任何痕迹——毛利率精确到小数点后两位，只是偏高。
     """
 
     quoted_price: float
@@ -106,13 +111,14 @@ class CostInputs:
     inbound_freight: float
     duty_rate: float
     referral_rate: float
-    fba_fee: float
+    fba_fee: float | None
     return_rate: float
     returns_handling_fee: float
     returns_refund_admin_rate: float
     returns_goods_loss_ratio: float
     returns_inbound_loss_ratio: float
     incoterm: str | None = None
+    fba_bounds: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -133,8 +139,23 @@ class ProfitResult:
     gross_margin: float
     breakeven_acos: float | None
     breakeven_reason: str | None
+    fba_known: bool = True
+    fba_low: float = 0.0
+    fba_high: float = 0.0
+    gross_profit_low: float = 0.0
+    gross_profit_high: float = 0.0
+    gross_margin_low: float = 0.0
+    gross_margin_high: float = 0.0
     assumptions: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+
+    @property
+    def fba_range_usd(self) -> tuple[float, float]:
+        return (self.fba_low, self.fba_high)
+
+    @property
+    def gross_margin_range(self) -> tuple[float, float]:
+        return (self.gross_margin_low, self.gross_margin_high)
 
     def as_dict(self) -> dict[str, object]:
         """给 API 层用的序列化形式。金额保留 4 位，比率保留 6 位。"""
@@ -148,9 +169,19 @@ class ProfitResult:
             "landed_cost": round(self.landed_cost, 4),
             "referral_fee": round(self.referral_fee, 4),
             "fba_fee": round(self.fba_fee, 4),
+            "fba_known": self.fba_known,
+            "fba_range_usd": [round(self.fba_low, 4), round(self.fba_high, 4)],
             "returns": self.returns.as_dict(),
             "gross_profit": round(self.gross_profit, 4),
             "gross_margin": round(self.gross_margin, 6),
+            "gross_profit_range_usd": [
+                round(self.gross_profit_low, 4),
+                round(self.gross_profit_high, 4),
+            ],
+            "gross_margin_range": [
+                round(self.gross_margin_low, 6),
+                round(self.gross_margin_high, 6),
+            ],
             "breakeven_acos": None if self.breakeven_acos is None else round(self.breakeven_acos, 6),
             "breakeven_reason": self.breakeven_reason,
             "freight_included_in_quote": self.freight_included_in_quote,
@@ -193,7 +224,6 @@ def compute(inputs: CostInputs) -> ProfitResult:
         ("头程运费", inputs.inbound_freight),
         ("关税税率", inputs.duty_rate),
         ("佣金率", inputs.referral_rate),
-        ("FBA 费", inputs.fba_fee),
         ("退货处理费", inputs.returns_handling_fee),
         ("退款管理费率", inputs.returns_refund_admin_rate),
         ("商品损失比例", inputs.returns_goods_loss_ratio),
@@ -258,7 +288,46 @@ def compute(inputs: CostInputs) -> ProfitResult:
 
     # ---------- 2. 平台费用 ----------
     referral_fee = selling_price * _check_finite("佣金率", inputs.referral_rate)
-    fba_fee = _check_finite("FBA 费", inputs.fba_fee)
+
+    # FBA：要么知道这一单的费（点值），要么知道它的可证明区间（包络）。
+    # 两条路之外没有第三条——尤其是「默认 0」，那不是第三态，是错误。
+    fba_known = inputs.fba_fee is not None
+    if fba_known:
+        fba_low = fba_high = _check_finite("FBA 费", inputs.fba_fee)
+        if fba_low < 0:
+            raise InputInvalid(f"FBA 费不能为负，当前值: {fba_low}")
+    else:
+        if inputs.fba_bounds is None:
+            raise ParamUnverified(
+                "未提供 FBA 费，也没有可用的费率包络",
+                detail=(
+                    "FBA 费不能默认为 0：一件标准尺寸商品的配送费在 $2.4–13.4 之间，"
+                    "按 0 计会让毛利率静默偏高同样金额，而报表上看不出任何异常。"
+                    "请传 fba_fee，或传 product_class + ship_date 由费率表算包络"
+                ),
+            )
+        raw_low, raw_high = inputs.fba_bounds
+        fba_low = _check_finite("FBA 包络下界", raw_low)
+        fba_high = _check_finite("FBA 包络上界", raw_high)
+        if fba_low < 0 or fba_high < 0:
+            raise InputInvalid(
+                f"FBA 包络不能为负，当前值: [{fba_low}, {fba_high}]"
+            )
+        if fba_high < fba_low:
+            raise InputInvalid(
+                f"FBA 包络上界小于下界：[{fba_low}, {fba_high}]",
+                detail="包络必须满足 low ≤ high，否则区间无意义",
+            )
+        assumptions.append(
+            f"FBA 费未提供，按官方费率表的包络 ${fba_low:.2f}–${fba_high:.2f} 计算："
+            "毛利率因此是一个区间，[下界] 对应最贵档、[上界] 对应最便宜档"
+        )
+        if fba_high - fba_low > 1.0:
+            warnings.append(
+                f"FBA 包络跨度 ${fba_high - fba_low:.2f}（${fba_low:.2f}–${fba_high:.2f}）："
+                "跨度越大，毛利率区间越宽；若知道商品的尺寸段或重量上界，"
+                "可用 size_tiers / weight_range_oz 收窄后再算"
+            )
 
     # ---------- 3. 退货影响：一段收入冲减 + 四段费用 ----------
     # 退款管理费按「每笔退款」封顶：min($5.00, 费率 × 单件佣金)。
@@ -292,8 +361,24 @@ def compute(inputs: CostInputs) -> ProfitResult:
     )
 
     # ---------- 4. 汇总 ----------
-    gross_profit = selling_price - landed_cost - referral_fee - fba_fee - returns.total
-    gross_margin = gross_profit / selling_price
+    # 两个端点各算一次：最便宜 FBA → 最高毛利；最贵 FBA → 最低毛利。
+    # 对外给的点值取「最低毛利」（即最贵 FBA），因为两种错误的代价不对称：
+    # 高估成本会让人错过一个好品（可复核），低估成本会让人投一个亏钱的品（不可逆）。
+    def _gross_at(fba: float) -> tuple[float, float]:
+        profit_at = selling_price - landed_cost - referral_fee - fba - returns.total
+        return profit_at, profit_at / selling_price
+
+    gross_profit_high, gross_margin_high = _gross_at(fba_low)
+    gross_profit_low, gross_margin_low = _gross_at(fba_high)
+    fba_fee = fba_high
+    gross_profit = gross_profit_low
+    gross_margin = gross_margin_low
+
+    if not fba_known and gross_profit_low <= 0 < gross_profit_high:
+        warnings.append(
+            "毛利区间跨过 0：这件商品能不能做，完全取决于包装后的尺寸与实重——"
+            "按最便宜档能赚，按最贵档会亏。此时必须先量包装再定价，不能凭感觉"
+        )
 
     if gross_profit > 0:
         breakeven_acos: float | None = gross_profit / selling_price
@@ -328,6 +413,13 @@ def compute(inputs: CostInputs) -> ProfitResult:
         gross_margin=gross_margin,
         breakeven_acos=breakeven_acos,
         breakeven_reason=breakeven_reason,
+        fba_known=fba_known,
+        fba_low=fba_low,
+        fba_high=fba_high,
+        gross_profit_low=gross_profit_low,
+        gross_profit_high=gross_profit_high,
+        gross_margin_low=gross_margin_low,
+        gross_margin_high=gross_margin_high,
         assumptions=tuple(assumptions),
         warnings=tuple(warnings),
     )

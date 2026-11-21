@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .db import fba as fba_db
 from .domain import compliance as compliance_mod
 from .domain import decision as decision_mod
 from .domain import profit as profit_mod
@@ -21,10 +22,28 @@ from .schemas import DecisionRequest
 def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
     """按成本档案 + 合规规则表出一次决策。
 
-    顺序固定：先算利润（纯函数，不依赖库），再查合规（依赖库）。
-    利润算不出来就直接抛错，不必为一个注定失败的请求去查库。
+    顺序固定：先定 FBA 费（可能查表算包络），再算利润（纯函数），再查合规（依赖库）。
+    利润算不出来就直接抛错，不必为一个注定失败的请求去查合规表。
+
+    调用方没给 fba_fee 时，这里用官方费率表算一个**区间**而不是填一个数：
+    真实尺寸重量未知的情况下，区间是这个系统能给出的最强结论——
+    它的两端都是官方数值，所以「最坏情况仍然达标」是可以直接采信的。
     """
     cost = payload.cost
+    envelope = None
+    fba_bounds = None
+    if cost.fba_fee is None:
+        envelope = fba_db.envelope(
+            conn,
+            payload.marketplace,
+            product_class=cost.product_class,
+            selling_price=cost.selling_price,
+            ship_date=cost.ship_date,
+            size_tiers=cost.fba_size_tiers,
+            weight_range_oz=cost.fba_weight_range_oz,
+        )
+        fba_bounds = (envelope.low_usd, envelope.high_usd)
+
     inputs = profit_mod.CostInputs(
         quoted_price=cost.quoted_price,
         selling_price=cost.selling_price,
@@ -32,6 +51,7 @@ def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
         duty_rate=cost.duty_rate,
         referral_rate=cost.referral_rate,
         fba_fee=cost.fba_fee,
+        fba_bounds=fba_bounds,
         return_rate=cost.return_rate,
         returns_handling_fee=cost.returns_handling_fee,
         returns_refund_admin_rate=cost.returns_refund_admin_rate,
@@ -52,4 +72,7 @@ def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
     body["asin"] = payload.asin
     body["marketplace"] = payload.marketplace
     body["category"] = payload.category
+    if envelope is not None:
+        # 区间怎么来的要能自己核对：哪个版本、哪个价格带、上下界分别落在哪一档。
+        body["fba_envelope"] = envelope.as_dict()
     return body

@@ -8,6 +8,8 @@
     python scripts/db.py roundtrip           # 在临时库验证 up→down→up，不动真库
     python scripts/db.py params              # 参数核实进度
     python scripts/db.py fba                 # FBA 费率维表覆盖率与缺口
+    python scripts/db.py fba-envelope --product-class dangerous_goods --price 59.99
+                                             # 没有真实尺寸重量时，FBA 费能确定到什么范围
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -18,6 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,14 @@ from xborder_insight.db import fba as fba_db  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
+from xborder_insight.domain.fba import (  # noqa: E402
+    PRICE_BAND_LABELS,
+    PRODUCT_CLASSES,
+    PRODUCT_CLASS_LABELS,
+    SIZE_TIERS,
+    SIZE_TIER_LABELS,
+)
+from xborder_insight.errors import AppError  # noqa: E402
 
 
 def _dump_status(conn) -> int:
@@ -134,6 +145,83 @@ def _dump_fba(conn, marketplace: str) -> int:
     return 0
 
 
+def _parse_iso_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"日期格式应为 YYYY-MM-DD，收到 {text!r}") from exc
+
+
+def _dump_envelope(conn, args) -> int:
+    """不知道尺寸重量时，这个 SKU 的 FBA 费最多和最多少。
+
+    输出刻意把「假设」与「提示」分开印：假设是我按什么口径算的（可复核），
+    提示是你可能想改的输入（可当场收窄）。混在一起会让人分不清哪句是结论。
+    """
+    if args.max_oz is not None and args.max_lb is not None:
+        print("[拒绝执行] --max-oz 与 --max-lb 只能给一个：单位不同，同时给必然算错")
+        return 2
+    max_oz = None
+    if args.max_oz is not None:
+        max_oz = float(args.max_oz)
+    elif args.max_lb is not None:
+        max_oz = float(args.max_lb) * 16.0
+    weight_range = None if max_oz is None else (0.1, max_oz)
+
+    ship_date = args.ship_date or date.today()
+    try:
+        env = fba_db.envelope(
+            conn,
+            args.market,
+            product_class=args.product_class,
+            selling_price=args.price,
+            ship_date=ship_date,
+            size_tiers=args.size_tier,
+            weight_range_oz=weight_range,
+        )
+    except AppError as exc:
+        print(f"[无法给出包络] {exc.code}: {exc.message}")
+        if getattr(exc, "detail", None):
+            print(f"  {exc.detail}")
+        return 1
+
+    print(f"FBA 费包络　市场={args.market}")
+    print("-" * 62)
+    print(
+        f"  售价 ${args.price:.2f} → {PRICE_BAND_LABELS.get(env.price_band, env.price_band)}"
+        f"　发货日 {ship_date.isoformat()} → 版本 {env.version_key}"
+        f"（{env.rate_period}）"
+    )
+    print(
+        f"  产品类别：{PRODUCT_CLASS_LABELS[args.product_class]}"
+        + (
+            "　尺寸段："
+            + "、".join(SIZE_TIER_LABELS.get(t, t) for t in args.size_tier)
+            if args.size_tier
+            else "　尺寸段：未限定"
+        )
+    )
+    print()
+    print(f"  FBA 费 ${env.low_usd:.2f} – ${env.high_usd:.2f}　（跨度 ${env.spread_usd:.2f}）")
+    print(f"    最低档 {env.low_row.dimension_label()}")
+    print(f"    最高档 {env.high_row.dimension_label()}")
+    print(f"  扫过 {env.row_count} 个已核实行，燃油附加费 "
+          + (f"{env.fuel_surcharge_rate:.2%}" if env.fuel_surcharge_rate else "未施加"))
+    print()
+    print("  假设：")
+    for line in env.assumptions:
+        print(f"    · {line}")
+    if env.warnings:
+        print()
+        print("  提示：")
+        for line in env.warnings:
+            print(f"    ! {line}")
+    print()
+    print("  区间两端都是官方费率，不是估计值：整体在阈值一侧时可直接定论，")
+    print("  只有跨过阈值才需要量包装。你给的条件越具体，区间越窄。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -154,6 +242,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("params", help="参数核实进度")
     fba_parser = sub.add_parser("fba", help="FBA 费率维表覆盖率与缺口")
     fba_parser.add_argument("--market", default="US")
+
+    env_parser = sub.add_parser(
+        "fba-envelope", help="没有真实尺寸重量时，FBA 费能确定到什么范围"
+    )
+    env_parser.add_argument("--market", default="US")
+    env_parser.add_argument("--product-class", required=True, choices=PRODUCT_CLASSES)
+    env_parser.add_argument("--price", type=float, required=True, help="售价（美元）")
+    env_parser.add_argument("--ship-date", type=_parse_iso_date, default=None,
+                            help="YYYY-MM-DD，默认今天")
+    env_parser.add_argument("--size-tier", action="append", choices=SIZE_TIERS,
+                            default=None, help="可多次给；不传则不限定")
+    env_parser.add_argument("--max-oz", type=float, default=None, help="重量上界（oz）")
+    env_parser.add_argument("--max-lb", type=float, default=None, help="重量上界（lb）")
 
     reset = sub.add_parser("reset", help="回滚到 0 再升级（清空数据）")
     reset.add_argument("--yes", action="store_true")
@@ -190,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
             return _dump_params(conn)
         if args.command == "fba":
             return _dump_fba(conn, args.market)
+        if args.command == "fba-envelope":
+            return _dump_envelope(conn, args)
         if args.command == "up":
             applied = migrate.upgrade(conn, args.target if args.target is not None else migrate.LATEST)
             print(f"已应用 {len(applied)} 个迁移：{applied or '无需变更'}")

@@ -549,6 +549,279 @@ def quote(
 # ---------------------------------------------------------------- 审计
 
 
+# ---------------------------------------------------------------- 费用包络
+
+
+@dataclass(frozen=True)
+class FeeEnvelope:
+    """知道售价、发货日、产品类别，但**不知道包装尺寸与实重**时的 FBA 费范围。
+
+    这不是估计。上下界都是表里的真实费率，只是「哪一格」还没定，
+    所以它给出的是可证明的界：只要该 SKU 落在已录的尺寸段内，
+    真实费用一定在 [low_usd, high_usd] 里（区间内每个点都有对应的真实格子）。
+
+    存在的理由：没有真实尺寸时，硬填一个「大概 $4」会让毛利率看起来
+    精确到小数点后两位，而实际可能差一倍。包络把这件事摆到明面上——
+    区间整体在阈值一侧时可以直接定论，只有跨过阈值才需要去量箱子。
+    """
+
+    version_key: str
+    rate_period: str
+    product_class: str
+    price_band: str
+    season: str
+    low_usd: float
+    high_usd: float
+    low_row: FeeRow
+    high_row: FeeRow
+    row_count: int
+    size_tiers: tuple[str, ...]
+    fuel_surcharge_rate: float
+    assumed_size_tiers: tuple[str, ...] = ()
+    assumed_weight_oz: tuple[float, float] | None = None
+    assumptions: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def spread_usd(self) -> float:
+        return round(self.high_usd - self.low_usd, 4)
+
+    @property
+    def narrowed(self) -> bool:
+        """是否用上了「部分已知」（尺寸段或重量范围）。"""
+        return bool(self.assumed_size_tiers) or self.assumed_weight_oz is not None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "version_key": self.version_key,
+            "rate_period": self.rate_period,
+            "product_class": self.product_class,
+            "price_band": self.price_band,
+            "season": self.season,
+            "low_usd": round(self.low_usd, 4),
+            "high_usd": round(self.high_usd, 4),
+            "spread_usd": self.spread_usd,
+            "low_at": self.low_row.dimension_label(),
+            "high_at": self.high_row.dimension_label(),
+            "row_count": self.row_count,
+            "size_tiers": list(self.size_tiers),
+            "assumed_size_tiers": list(self.assumed_size_tiers),
+            "assumed_weight_oz": (
+                None
+                if self.assumed_weight_oz is None
+                else [round(self.assumed_weight_oz[0], 4), round(self.assumed_weight_oz[1], 4)]
+            ),
+            "fuel_surcharge_rate": round(self.fuel_surcharge_rate, 6),
+            "assumptions": list(self.assumptions),
+            "warnings": list(self.warnings),
+        }
+
+
+def _fee_at(row: FeeRow, weight_oz: float, fuel_rate: float) -> float:
+    """某一行在某个重量上的费用（含燃油）。行的费用随重量单调不减。"""
+    base = row.base_fee_usd + row.extra_weight_fee(weight_oz)
+    return base * (1.0 + fuel_rate)
+
+
+def fee_envelope(
+    rows: list[FeeRow],
+    versions: list[RateVersion],
+    *,
+    product_class: str,
+    selling_price: float,
+    ship_date: date,
+    fuel_surcharge_rate: float | None = None,
+    size_tiers: tuple[str, ...] | list[str] | None = None,
+    weight_range_oz: tuple[float, float] | None = None,
+) -> FeeEnvelope:
+    """在缺少精确尺寸与重量时，用已核实的费率行算出 FBA 费的上下界。
+
+    取的是**端点样本**：每一行在区间下端（最便宜）与上端（最贵）各算一次，
+    全部样本的最小/最大值即为包络。端点都是表里的真实数字，中间不插值——
+    插值会造出一个「官方没有的费率」，而这正是本项目一直在拒绝的事。
+
+    只扫已核实的行：draft 行的数值可能还没核对过，让它参与包络等于
+    用一个未核实的数去界定一个看起来可证明的区间，比不报更糟。
+
+    `size_tiers` / `weight_range_oz` 是**可选的收窄条件**，对应「部分已知」：
+    不知道精确重量，但知道「这是大号标准件、肯定不超过 2 lb」，就该把
+    这个已知条件用上，而不是拿全表 20 lb 的极值当自己的风险范围。
+    不传就是全区间——那是「什么都不知道」时的正确答案，不是缺陷。
+    """
+    if product_class not in PRODUCT_CLASSES:
+        raise InputInvalid(
+            f"未知的产品类别: {product_class!r}",
+            detail=(
+                f"可选值: {', '.join(PRODUCT_CLASSES)}。"
+                "官方按非服装 / 服装 / 危险品分三套费率，包络也必须先确定用哪套"
+            ),
+        )
+
+    wanted_tiers: tuple[str, ...] | None = None
+    if size_tiers:
+        unknown = [tier for tier in size_tiers if tier not in SIZE_TIERS]
+        if unknown:
+            raise InputInvalid(
+                f"未知的尺寸段: {', '.join(unknown)}",
+                detail=f"可选值: {', '.join(SIZE_TIERS)}。尺寸段由包装后尺寸决定，不能猜",
+            )
+        wanted_tiers = tuple(size_tiers)
+
+    if weight_range_oz is not None:
+        wlo, whi = (float(weight_range_oz[0]), float(weight_range_oz[1]))
+        if not (math.isfinite(wlo) and math.isfinite(whi)):
+            raise InputInvalid(f"重量范围必须是有限数值，当前值: {weight_range_oz!r}")
+        if wlo <= 0 or whi < wlo:
+            raise InputInvalid(
+                f"重量范围不合法: {wlo:g}–{whi:g} oz",
+                detail="下界必须大于 0，上界不得小于下界（单位 oz）",
+            )
+        weight_range = (wlo, whi)
+    else:
+        weight_range = None
+
+    band = price_band_of(selling_price)
+    season = season_of(ship_date)
+    version = pick_version(versions, ship_date)
+    if version is None:
+        known = "、".join(
+            v.version_key for v in sorted(versions, key=lambda v: v.effective_from)
+        ) or "（一个版本都没登记）"
+        raise ParamUnverified(
+            f"发货日期 {ship_date.isoformat()}（{SEASON_LABELS[season]}）没有对应的费率版本",
+            detail=f"已登记的版本：{known}。没有版本就无法界定费率范围，不能跨期借用",
+        )
+    if not version.verified:
+        raise ParamUnverified(
+            f"费率版本未核实：{version.dimension_label()}",
+            detail=f"该版本处于 {version.status} 状态，缺少官方来源或核实时间",
+        )
+
+    in_version = [
+        row
+        for row in rows
+        if row.version_key == version.version_key
+        and row.product_class == product_class
+        and row.price_band == band
+        and row.verified
+    ]
+    if not in_version:
+        raise ParamUnverified(
+            f"费率版本 {version.version_key} 没有「"
+            f"{PRODUCT_CLASS_LABELS[product_class]} · {PRICE_BAND_LABELS[band]}」的已核实行",
+            detail=(
+                "包络不能借用别的价格带或别的产品类别：售价落在哪个带由价格带边界决定，"
+                "类别由商品本身决定，两者都不是可以四舍五入的维度"
+            ),
+        )
+
+    candidates = [
+        row for row in in_version if wanted_tiers is None or row.size_tier in wanted_tiers
+    ]
+    if not candidates:
+        raise ParamUnverified(
+            "指定的尺寸段在费率表里没有已核实行："
+            + "、".join(SIZE_TIER_LABELS.get(t, t) for t in wanted_tiers or ()),
+            detail=(
+                "该期该类别已录的是："
+                + "、".join(
+                    sorted({SIZE_TIER_LABELS.get(r.size_tier, r.size_tier) for r in in_version})
+                )
+                + "。包络不能跨尺寸段借用"
+            ),
+        )
+
+    capped = [row for row in candidates if row.weight_max_oz is None]
+    if capped:
+        # 上界未知就无法给出「最贵是多少」。当前数据全档封顶，走到这里说明录入了
+        # 一个开区间档位，需要人工确认它的收费上限，不能默默取下界当上界。
+        raise ParamUnverified(
+            f"存在未封顶的档位，无法确定费用上界：{capped[0].dimension_label()}",
+            detail="该档 weight_max_oz 为空，包络的上界无从计算，请补齐官方档位上限",
+        )
+
+    rate = 0.0 if fuel_surcharge_rate is None else float(fuel_surcharge_rate)
+    samples: list[tuple[float, FeeRow]] = []
+    for row in candidates:
+        low_oz = row.weight_min_oz
+        high_oz = float(row.weight_max_oz)
+        if weight_range is not None:
+            low_oz = max(low_oz, weight_range[0])
+            high_oz = min(high_oz, weight_range[1])
+            if low_oz > high_oz + _EPS:
+                continue
+        samples.append((_fee_at(row, low_oz, rate), row))
+        samples.append((_fee_at(row, high_oz, rate), row))
+
+    if not samples:
+        raise ParamUnverified(
+            f"假定的重量范围 {weight_range[0]:g}–{weight_range[1]:g} oz 不落在任何已核实行内",
+            detail=(
+                "该期该类别该价格带的重量覆盖是 "
+                + "、".join(row.coverage_label for row in candidates[:3])
+                + ("……" if len(candidates) > 3 else "")
+                + "；范围完全落在表外时无法给出包络，也不能外推"
+            ),
+        )
+
+    low_fee, low_row = min(samples, key=lambda item: item[0])
+    high_fee, high_row = max(samples, key=lambda item: item[0])
+
+    size_tier_set = tuple(sorted({row.size_tier for row in candidates}))
+    assumptions = [
+        f"费率版本 {version.version_key}（{version.period_label}）"
+        f"按发货日期 {ship_date.isoformat()} 定档，口径为{SEASON_LABELS[season]}",
+        f"售价 ${float(selling_price):.2f} 归入「{PRICE_BAND_LABELS[band]}」价格带",
+        f"包络扫过 {len(candidates)} 个已核实行、覆盖 "
+        f"{'、'.join(SIZE_TIER_LABELS.get(t, t) for t in size_tier_set)}；"
+        "上下界取自重量的档位端点，中间不插值——区间内每个点都对应一个真实费率",
+        "该区间不是「平均值」也不是「经验值」：它回答的是「还不知道尺寸重量时，"
+        "费用最坏能到多少、最好能到多少」",
+    ]
+    warnings: list[str] = []
+    if wanted_tiers:
+        assumptions.append(
+            "尺寸段按调用方指定的 "
+            + "、".join(SIZE_TIER_LABELS.get(t, t) for t in wanted_tiers)
+            + " 取包络；若实际不属于这些段，区间不适用"
+        )
+    if weight_range is not None:
+        assumptions.append(
+            f"重量按调用方假定的 {weight_range[0]:g}–{weight_range[1]:g} oz 取包络；"
+            "这是假定范围，不是实测值——若真实重量超出该范围，费用可能高于上界"
+        )
+    if fuel_surcharge_rate is None:
+        assumptions.append(
+            "本次没有可核实的燃油附加费率，包络按 0 计提；"
+            "若实际有附加费，真实费用会比上界更高，毛利率比区间下界更低"
+        )
+    if not wanted_tiers and not weight_range:
+        warnings.append(
+            f"未提供任何尺寸/重量条件，包络覆盖 {len(size_tier_set)} 个尺寸段的全重量区间，"
+            f"跨度 ${high_fee - low_fee:.2f}；若知道商品的尺寸段或重量上界，"
+            "传入后可显著收窄"
+        )
+
+    return FeeEnvelope(
+        version_key=version.version_key,
+        rate_period=version.period_label,
+        product_class=product_class,
+        price_band=band,
+        season=season,
+        low_usd=low_fee,
+        high_usd=high_fee,
+        low_row=low_row,
+        high_row=high_row,
+        row_count=len(candidates),
+        size_tiers=size_tier_set,
+        fuel_surcharge_rate=rate,
+        assumed_size_tiers=wanted_tiers or (),
+        assumed_weight_oz=weight_range,
+        assumptions=tuple(assumptions),
+        warnings=tuple(warnings),
+    )
+
+
 @dataclass(frozen=True)
 class GroupCoverage:
     """一组（版本 × 尺寸段 × 产品类别 × 价格带）的覆盖情况。

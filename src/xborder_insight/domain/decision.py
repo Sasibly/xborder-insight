@@ -132,26 +132,61 @@ def decide(
         )
 
     # ---------- 毛利 ----------
-    if profit.gross_profit <= 0:
+    # FBA 未知时毛利率是一个区间。三种情况必须分开，因为动作不同：
+    #   乐观端都不达标 → 这件商品确实不能做（不需要去量箱子）；
+    #   保守端都达标   → 可以做，真实值只会更好（同样不需要量箱子）；
+    #   跨过阈值       → 做不做取决于包装尺寸，此时才必须量（UNKNOWN）。
+    # 把第三种说成 FAIL 会误杀，说成 PASS 会误导投入。
+    if not profit.fba_known:
+        margin_observed = (
+            f"${profit.gross_profit:.2f}–${profit.gross_profit_high:.2f}"
+            f"（{profit.gross_margin_low:.1%}–{profit.gross_margin_high:.1%}，"
+            f"FBA ${profit.fba_low:.2f}–${profit.fba_high:.2f}）"
+        )
+        if profit.gross_margin_high < MIN_GROSS_MARGIN:
+            margin_result = FAIL
+            margin_detail = (
+                f"即使按最便宜档（FBA ${profit.fba_low:.2f}），毛利率也只有 "
+                f"{profit.gross_margin_high:.1%}，仍低于假设下限 {MIN_GROSS_MARGIN:.0%}；"
+                "换档位救不回来，问题在成本结构本身"
+            )
+        elif profit.gross_margin_low >= MIN_GROSS_MARGIN:
+            margin_result = PASS
+            margin_detail = (
+                f"即使按最贵档（FBA ${profit.fba_high:.2f}），毛利率仍有 "
+                f"{profit.gross_margin_low:.1%}，高于假设下限 {MIN_GROSS_MARGIN:.0%}；"
+                "尺寸重量只会让结论更好"
+            )
+        else:
+            margin_result = UNKNOWN
+            margin_detail = (
+                f"毛利率区间 {profit.gross_margin_low:.1%}–{profit.gross_margin_high:.1%} "
+                f"跨过假设下限 {MIN_GROSS_MARGIN:.0%}：做不做取决于包装后的尺寸与实重。"
+                "量过包装（或给出尺寸段/重量上界）即可定论"
+            )
+    elif profit.gross_profit <= 0:
         margin_result = FAIL
+        margin_observed = f"${profit.gross_profit:.2f}（{profit.gross_margin:.1%}）"
         margin_detail = (
             f"单件毛利 ${profit.gross_profit:.2f}，落地成本与平台费用已吃掉全部售价；"
             "加大广告只会加速亏损"
         )
     elif profit.gross_margin < MIN_GROSS_MARGIN:
         margin_result = FAIL
+        margin_observed = f"${profit.gross_profit:.2f}（{profit.gross_margin:.1%}）"
         margin_detail = (
             f"毛利率 {profit.gross_margin:.1%} 低于假设下限 {MIN_GROSS_MARGIN:.0%}，"
             "余量不足以覆盖固定开销与退货波动"
         )
     else:
         margin_result = PASS
+        margin_observed = f"${profit.gross_profit:.2f}（{profit.gross_margin:.1%}）"
         margin_detail = f"毛利率 {profit.gross_margin:.1%}，高于假设下限 {MIN_GROSS_MARGIN:.0%}"
 
     reasons.append(
         Reason(
             factor="单件毛利",
-            observed=f"${profit.gross_profit:.2f}（{profit.gross_margin:.1%}）",
+            observed=margin_observed,
             result=margin_result,
             detail=margin_detail,
             ref="profit.gross_margin",
@@ -159,39 +194,74 @@ def decide(
     )
 
     # ---------- 广告空间 ----------
-    if profit.breakeven_acos is None:
-        reasons.append(
-            Reason(
-                factor="广告空间",
-                observed="不存在",
-                result=FAIL,
-                detail=profit.breakeven_reason or "毛利非正，无广告空间",
-                ref="profit.breakeven_acos",
+    # 盈亏平衡 ACOS 在数值上就等于毛利率，所以区间判断与毛利同构：
+    # 最便宜档都投不出量 → 确定不行；最贵档都够 → 确定可行；跨阈值 → 待定。
+    if not profit.fba_known:
+        if profit.gross_profit_high <= 0:
+            acos_result = FAIL
+            acos_observed = "不存在（最便宜档毛利也非正）"
+            acos_detail = (
+                "即使按最便宜档计，毛利仍非正，任何广告投入都只放大亏损"
             )
-        )
+        elif profit.gross_profit_low <= 0:
+            acos_result = UNKNOWN
+            acos_observed = (
+                f"不存在–{profit.gross_margin_high:.1%}"
+                f"（毛利区间 ${profit.gross_profit_low:.2f}–${profit.gross_profit_high:.2f}）"
+            )
+            acos_detail = (
+                "按最贵档无广告空间、按最便宜档有——是否可投取决于包装尺寸与实重，"
+                "量过包装才能定论"
+            )
+        elif profit.gross_margin_low < MIN_BREAKEVEN_ACOS <= profit.gross_margin_high:
+            acos_result = UNKNOWN
+            acos_observed = (
+                f"{profit.gross_margin_low:.1%}–{profit.gross_margin_high:.1%}"
+                f"（FBA ${profit.fba_low:.2f}–${profit.fba_high:.2f}）"
+            )
+            acos_detail = (
+                f"区间跨过假设下限 {MIN_BREAKEVEN_ACOS:.0%}："
+                "量过包装后若落在下半段，则广告投不出量"
+            )
+        elif profit.gross_margin_high < MIN_BREAKEVEN_ACOS:
+            acos_result = FAIL
+            acos_observed = f"最高 {profit.gross_margin_high:.1%}"
+            acos_detail = (
+                f"即使按最便宜档，盈亏平衡 ACOS 也只有 {profit.gross_margin_high:.1%}，"
+                f"低于假设下限 {MIN_BREAKEVEN_ACOS:.0%}；换档位救不回来"
+            )
+        else:
+            acos_result = PASS
+            acos_observed = f"最低 {profit.gross_margin_low:.1%}"
+            acos_detail = (
+                f"即使按最贵档，仍有 {profit.gross_margin_low:.1%}，"
+                f"高于假设下限 {MIN_BREAKEVEN_ACOS:.0%}"
+            )
+    elif profit.breakeven_acos is None:
+        acos_result = FAIL
+        acos_observed = "不存在"
+        acos_detail = profit.breakeven_reason or "毛利非正，无广告空间"
     elif profit.breakeven_acos < MIN_BREAKEVEN_ACOS:
-        reasons.append(
-            Reason(
-                factor="广告空间",
-                observed=f"盈亏平衡 ACOS {profit.breakeven_acos:.1%}",
-                result=FAIL,
-                detail=(
-                    f"低于假设下限 {MIN_BREAKEVEN_ACOS:.0%}：新品期真实 ACOS 普遍高于此，"
-                    "意味着有毛利但很难投出量"
-                ),
-                ref="profit.breakeven_acos",
-            )
+        acos_result = FAIL
+        acos_observed = f"盈亏平衡 ACOS {profit.breakeven_acos:.1%}"
+        acos_detail = (
+            f"低于假设下限 {MIN_BREAKEVEN_ACOS:.0%}：新品期真实 ACOS 普遍高于此，"
+            "意味着有毛利但很难投出量"
         )
     else:
-        reasons.append(
-            Reason(
-                factor="广告空间",
-                observed=f"盈亏平衡 ACOS {profit.breakeven_acos:.1%}",
-                result=PASS,
-                detail=f"高于假设下限 {MIN_BREAKEVEN_ACOS:.0%}，具备投放空间",
-                ref="profit.breakeven_acos",
-            )
+        acos_result = PASS
+        acos_observed = f"盈亏平衡 ACOS {profit.breakeven_acos:.1%}"
+        acos_detail = f"高于假设下限 {MIN_BREAKEVEN_ACOS:.0%}，具备投放空间"
+
+    reasons.append(
+        Reason(
+            factor="广告空间",
+            observed=acos_observed,
+            result=acos_result,
+            detail=acos_detail,
+            ref="profit.breakeven_acos",
         )
+    )
 
     # ---------- 机会分 ----------
     if opportunity_score < MIN_OPPORTUNITY_SCORE:
@@ -239,6 +309,10 @@ def _synthesize(
 
     顺序不是随意的：合规不过就根本不能上架，此时讨论毛利毫无意义；
     毛利为负则广告空间必然为负。按「最上游的否决项」定结论，才符合实际决策过程。
+
+    这里**不重算**判断，只读 `reasons` 里已经算好的结果。理由是避免两份逻辑漂移：
+    一旦「毛利算 FAIL 的条件」在 decide 与 _synthesize 里各写一遍，改一处忘一处时，
+    结论与依据会互相矛盾——而报表只展示结论，没人会发现它和依据对不上。
     """
     if compliance.status == STATUS_BLOCKED:
         has_unverified = compliance.has_unverified_blocker
@@ -248,19 +322,38 @@ def _synthesize(
             + ("（其中含未核实项，核实后可能解除）" if has_unverified else ""),
         )
 
-    if profit.gross_profit <= 0:
-        return NO_GO, f"单件毛利 ${profit.gross_profit:.2f}，结构性亏损"
+    margin = next(r for r in reasons if r.factor == "单件毛利")
+    acos = next(r for r in reasons if r.factor == "广告空间")
+    opportunity = next(r for r in reasons if r.factor == "市场需求")
 
-    if profit.gross_margin < MIN_GROSS_MARGIN:
+    if margin.result == FAIL:
+        if not profit.fba_known and profit.gross_profit_high <= 0:
+            return (
+                NO_GO,
+                f"即使按最便宜档（FBA ${profit.fba_low:.2f}），单件毛利仍只有 "
+                f"${profit.gross_profit_high:.2f}，结构性亏损",
+            )
+        if profit.gross_profit <= 0:
+            return NO_GO, f"单件毛利 ${profit.gross_profit:.2f}，结构性亏损"
         return NO_GO, f"毛利率 {profit.gross_margin:.1%} 低于可接受下限"
 
-    if profit.breakeven_acos is None or profit.breakeven_acos < MIN_BREAKEVEN_ACOS:
+    if acos.result == FAIL:
         return NO_GO, "广告空间不足，有毛利但难以起量"
 
-    if opportunity_score < MIN_OPPORTUNITY_SCORE:
+    if opportunity.result == FAIL:
         return NO_GO, f"机会分 {opportunity_score:.2f} 不足以支撑投入"
 
-    # 到这里利润与需求都过了，只剩合规的确定性
+    # 到这里没有确定性否决，剩下的都是「信息不足」。
+    # 需要区分是不是 FBA 尺寸重量导致的——因为补它的动作（量箱子）与补合规动作完全不同。
+    if margin.result == UNKNOWN or acos.result == UNKNOWN:
+        return (
+            NEED_MORE_INFO,
+            "能不能做取决于包装后的尺寸与实重：毛利率区间 "
+            f"{profit.gross_margin_low:.1%}–{profit.gross_margin_high:.1%}"
+            f"（FBA ${profit.fba_low:.2f}–${profit.fba_high:.2f}）跨过判定阈值，"
+            "量过包装或给出尺寸段/重量上界即可定论",
+        )
+
     if compliance.status == STATUS_UNKNOWN:
         return (
             NEED_MORE_INFO,
