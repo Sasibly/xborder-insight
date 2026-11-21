@@ -30,6 +30,7 @@ from xborder_insight.db import fba as fba_db  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
+from xborder_insight.domain.package import PackageFacts  # noqa: E402
 from xborder_insight.domain.fba import (  # noqa: E402
     PRICE_BAND_LABELS,
     PRODUCT_CLASSES,
@@ -152,15 +153,70 @@ def _parse_iso_date(text: str) -> date:
         raise argparse.ArgumentTypeError(f"日期格式应为 YYYY-MM-DD，收到 {text!r}") from exc
 
 
-def _dump_envelope(conn, args) -> int:
-    """不知道尺寸重量时，这个 SKU 的 FBA 费最多和最多少。
+def _parse_dims(text: str) -> tuple[float, float, float]:
+    """解析 "18x14x8" / "18*14*8" / "18,14,8" 三种写法。
 
-    输出刻意把「假设」与「提示」分开印：假设是我按什么口径算的（可复核），
-    提示是你可能想改的输入（可当场收窄）。混在一起会让人分不清哪句是结论。
+    允许三种分隔符是因为量完箱子随手敲的时候，没人记得文档里写的是哪个。
+    但只接受三个值——两边或四边大概率是少写了一边，不能当成「差不多」。
     """
+    raw = text.replace("*", "x").replace(",", "x").replace("×", "x")
+    parts = [p.strip() for p in raw.split("x") if p.strip()]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            f"尺寸要给三个值（例：18x14x8），收到 {text!r}"
+        )
+    try:
+        values = tuple(float(p) for p in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"尺寸必须是数值，收到 {text!r}") from exc
+    if any(v <= 0 for v in values):
+        raise argparse.ArgumentTypeError(f"尺寸必须为正数，收到 {text!r}")
+    return values  # type: ignore[return-value]
+
+
+def _fmt_yes_no(value: bool) -> str:
+    return "是" if value else "否"
+
+
+def _dump_envelope(conn, args) -> int:
+    """不知道精确尺寸重量时，这个 SKU 的 FBA 费最多和最多少。
+
+    两条入口：
+      · 包装事实（--lithium + 实重/尺寸）—— 推荐。产品类别、尺寸段、计费重量
+        都从事实推出来，调用方不必自己判断，也就没有第二处可能出错。
+      · 裸查询（--product-class [+ --size-tier/--max-*]）—— 已知类别与段位时的
+        低层裁剪，不考虑体积重。两条入口不要在同一个命令里混用。
+    """
+    if args.lithium is not None:
+        mixed = [
+            flag
+            for flag, value in (
+                ("--product-class", args.product_class),
+                ("--size-tier", args.size_tier),
+                ("--max-oz/--max-lb", args.max_oz if args.max_oz is not None else args.max_lb),
+            )
+            if value
+        ]
+        if mixed:
+            print(
+                "[拒绝执行] --lithium 与 " + "、".join(mixed) + " 不能同时给："
+                "产品类别与尺寸段由包装事实推出，再手填一次会出现两个不一致的答案"
+            )
+            return 2
+    elif args.product_class is None:
+        print(
+            "[缺少输入] 给 --lithium yes|no（推荐，自动推类别与尺寸段），"
+            "或直接给 --product-class"
+        )
+        return 2
+
     if args.max_oz is not None and args.max_lb is not None:
         print("[拒绝执行] --max-oz 与 --max-lb 只能给一个：单位不同，同时给必然算错")
         return 2
+    if args.unit_oz is not None and args.unit_lb is not None:
+        print("[拒绝执行] --unit-oz 与 --unit-lb 只能给一个：单位不同，同时给必然算错")
+        return 2
+
     max_oz = None
     if args.max_oz is not None:
         max_oz = float(args.max_oz)
@@ -168,17 +224,41 @@ def _dump_envelope(conn, args) -> int:
         max_oz = float(args.max_lb) * 16.0
     weight_range = None if max_oz is None else (0.1, max_oz)
 
+    unit_oz = None
+    if args.unit_oz is not None:
+        unit_oz = float(args.unit_oz)
+    elif args.unit_lb is not None:
+        unit_oz = float(args.unit_lb) * 16.0
+
     ship_date = args.ship_date or date.today()
+
     try:
-        env = fba_db.envelope(
-            conn,
-            args.market,
-            product_class=args.product_class,
-            selling_price=args.price,
-            ship_date=ship_date,
-            size_tiers=args.size_tier,
-            weight_range_oz=weight_range,
-        )
+        if args.lithium is not None:
+            facts = PackageFacts(
+                has_lithium_battery=args.lithium == "yes",
+                unit_weight_oz=unit_oz,
+                dims_in=args.dims,
+                fits_standard_size=args.fits_standard,
+                volume_ceiling_in3=args.max_volume_in3,
+            )
+            package, env = fba_db.envelope_for_package(
+                conn,
+                args.market,
+                facts,
+                selling_price=args.price,
+                ship_date=ship_date,
+            )
+        else:
+            package = None
+            env = fba_db.envelope(
+                conn,
+                args.market,
+                product_class=args.product_class,
+                selling_price=args.price,
+                ship_date=ship_date,
+                size_tiers=args.size_tier,
+                weight_range_oz=weight_range,
+            )
     except AppError as exc:
         print(f"[无法给出包络] {exc.code}: {exc.message}")
         if getattr(exc, "detail", None):
@@ -192,19 +272,41 @@ def _dump_envelope(conn, args) -> int:
         f"　发货日 {ship_date.isoformat()} → 版本 {env.version_key}"
         f"（{env.rate_period}）"
     )
-    print(
-        f"  产品类别：{PRODUCT_CLASS_LABELS[args.product_class]}"
-        + (
-            "　尺寸段："
-            + "、".join(SIZE_TIER_LABELS.get(t, t) for t in args.size_tier)
-            if args.size_tier
-            else "　尺寸段：未限定"
+    print(f"  产品类别：{PRODUCT_CLASS_LABELS[env.product_class]}")
+    if package is not None:
+        print(
+            "  包装事实：含锂电池 "
+            + _fmt_yes_no(facts.has_lithium_battery)
+            + (f"　实重 {unit_oz:g} oz（{unit_oz / 16:g} lb）" if unit_oz is not None else "　实重 未给")
+            + (f"　体积重 {package.dim_weight_oz:.1f} oz（{package.dim_weight_oz / 16:.2f} lb）"
+               if package.dim_weight_oz is not None else "")
         )
-    )
+        print(f"  尺寸段：" + "、".join(SIZE_TIER_LABELS.get(t, t) for t in package.size_tiers))
+    else:
+        print(
+            "  尺寸段："
+            + (
+                "、".join(SIZE_TIER_LABELS.get(t, t) for t in args.size_tier)
+                if args.size_tier
+                else "未限定"
+            )
+        )
     print()
     print(f"  FBA 费 ${env.low_usd:.2f} – ${env.high_usd:.2f}　（跨度 ${env.spread_usd:.2f}）")
     print(f"    最低档 {env.low_row.dimension_label()}")
     print(f"    最高档 {env.high_row.dimension_label()}")
+    if env.billable_weight_oz is not None:
+        # 最高档那一行的区间可能一直到 20 lb，但本单只按计费重量上界取值，
+        # 不写出来的话，读的人会以为费用上界对应 20 lb。
+        print(
+            f"    费用上界按计费重量 {env.billable_weight_oz:.1f} oz"
+            f"（{env.billable_weight_oz / 16:.2f} lb）取值"
+            + (
+                f"；其中体积重 {env.dim_weight_oz:.1f} oz"
+                if env.dim_weight_oz is not None
+                else ""
+            )
+        )
     print(f"  扫过 {env.row_count} 个已核实行，燃油附加费 "
           + (f"{env.fuel_surcharge_rate:.2%}" if env.fuel_surcharge_rate else "未施加"))
     print()
@@ -247,14 +349,33 @@ def main(argv: list[str] | None = None) -> int:
         "fba-envelope", help="没有真实尺寸重量时，FBA 费能确定到什么范围"
     )
     env_parser.add_argument("--market", default="US")
-    env_parser.add_argument("--product-class", required=True, choices=PRODUCT_CLASSES)
     env_parser.add_argument("--price", type=float, required=True, help="售价（美元）")
     env_parser.add_argument("--ship-date", type=_parse_iso_date, default=None,
                             help="YYYY-MM-DD，默认今天")
+    env_parser.add_argument("--lithium", choices=("yes", "no"), default=None,
+                            help="是否含锂电池：yes 走危险品表，no 走普通商品表")
+    env_parser.add_argument("--unit-oz", type=float, default=None,
+                            help="包装后实重（oz），也可以是上界")
+    env_parser.add_argument("--unit-lb", type=float, default=None,
+                            help="包装后实重（lb），也可以是上界")
+    env_parser.add_argument("--dims", type=_parse_dims, default=None,
+                            help="包装后三边英寸，如 18x14x8")
+    env_parser.add_argument("--max-volume-in3", type=float, default=None,
+                            help="包装体积上界（立方英寸）：不知三边但知道「不超过一个鞋盒」时用")
+    env_parser.add_argument("--fits-standard", dest="fits_standard",
+                            action="store_true", default=None,
+                            help="只知三边都装得进 18x14x8 时可给这个，代替 --dims")
+    env_parser.add_argument("--no-fits-standard", dest="fits_standard",
+                            action="store_false",
+                            help="已知三边超出 18x14x8（会报不属于标准尺寸）")
+    env_parser.add_argument("--product-class", choices=PRODUCT_CLASSES, default=None,
+                            help="裸查询入口：直接指定类别，不考虑体积重")
     env_parser.add_argument("--size-tier", action="append", choices=SIZE_TIERS,
                             default=None, help="可多次给；不传则不限定")
-    env_parser.add_argument("--max-oz", type=float, default=None, help="重量上界（oz）")
-    env_parser.add_argument("--max-lb", type=float, default=None, help="重量上界（lb）")
+    env_parser.add_argument("--max-oz", type=float, default=None,
+                            help="裸查询入口：重量上界（oz），不区分尺寸段")
+    env_parser.add_argument("--max-lb", type=float, default=None,
+                            help="裸查询入口：重量上界（lb），不区分尺寸段")
 
     reset = sub.add_parser("reset", help="回滚到 0 再升级（清空数据）")
     reset.add_argument("--yes", action="store_true")

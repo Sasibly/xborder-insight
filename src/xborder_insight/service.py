@@ -15,6 +15,7 @@ import sqlite3
 from .db import fba as fba_db
 from .domain import compliance as compliance_mod
 from .domain import decision as decision_mod
+from .domain import package as package_mod
 from .domain import profit as profit_mod
 from .schemas import DecisionRequest
 
@@ -31,17 +32,34 @@ def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
     """
     cost = payload.cost
     envelope = None
+    package = None
     fba_bounds = None
     if cost.fba_fee is None:
-        envelope = fba_db.envelope(
-            conn,
-            payload.marketplace,
-            product_class=cost.product_class,
-            selling_price=cost.selling_price,
-            ship_date=cost.ship_date,
-            size_tiers=cost.fba_size_tiers,
-            weight_range_oz=cost.fba_weight_range_oz,
-        )
+        if cost.uses_package_facts:
+            # 只有三个判断题也能算：类别、尺寸段、计费重量都由事实推出来。
+            package, envelope = fba_db.envelope_for_package(
+                conn,
+                payload.marketplace,
+                package_mod.PackageFacts(
+                    has_lithium_battery=cost.has_lithium_battery,  # type: ignore[arg-type]
+                    unit_weight_oz=cost.unit_weight_oz,
+                    dims_in=cost.package_dims_in,
+                    fits_standard_size=cost.fits_standard_size,
+                    volume_ceiling_in3=cost.package_volume_in3,
+                ),
+                selling_price=cost.selling_price,
+                ship_date=cost.ship_date,
+            )
+        else:
+            envelope = fba_db.envelope(
+                conn,
+                payload.marketplace,
+                product_class=cost.product_class,
+                selling_price=cost.selling_price,
+                ship_date=cost.ship_date,
+                size_tiers=cost.fba_size_tiers,
+                weight_range_oz=cost.fba_weight_range_oz,
+            )
         fba_bounds = (envelope.low_usd, envelope.high_usd)
 
     inputs = profit_mod.CostInputs(
@@ -75,4 +93,7 @@ def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
     if envelope is not None:
         # 区间怎么来的要能自己核对：哪个版本、哪个价格带、上下界分别落在哪一档。
         body["fba_envelope"] = envelope.as_dict()
+    if package is not None:
+        # 类别与尺寸段是从哪三个事实推出来的，也要能核对。
+        body["fba_package"] = package.as_dict()
     return body

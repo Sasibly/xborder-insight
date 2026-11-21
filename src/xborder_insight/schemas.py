@@ -149,8 +149,19 @@ class CostProfileInput(BaseModel):
     product_class: str | None = None
     ship_date: date | None = None
     # 「部分已知」的收窄条件：知道是标准件、知道重量上界，就不该按全表 20 lb 报区间。
+    # 这两个是低层裁剪，不考虑体积重；知道包装事实时改用下面那组。
     fba_size_tiers: list[str] | None = None
     fba_weight_range_oz: tuple[float, float] | None = None
+
+    # 包装事实：给了这组，产品类别、尺寸段、计费重量都由它推出来，
+    # 调用方不必（也不许同时）自己判断 product_class 与 size_tier。
+    # has_lithium_battery 没有默认值——它是 BOM 事实，猜成普货每件少算约 $1。
+    has_lithium_battery: bool | None = None
+    unit_weight_oz: float | None = Field(default=None, gt=0)
+    package_dims_in: tuple[float, float, float] | None = None
+    fits_standard_size: bool | None = None
+    # 知道「包装不超过多大」但不知道精确三边时用这个：它直接约束体积重。
+    package_volume_in3: float | None = Field(default=None, gt=0)
 
     return_rate: float = Field(default=0.0, ge=0, le=1)
     returns_handling_fee: float = Field(default=0.0, ge=0)
@@ -200,6 +211,10 @@ class CostProfileInput(BaseModel):
             )
         return value
 
+    @property
+    def uses_package_facts(self) -> bool:
+        return self.has_lithium_battery is not None
+
     @model_validator(mode="after")
     def _fba_must_be_resolvable(self) -> "CostProfileInput":
         """FBA 费要么给数，要么给足算包络的条件；两条都不满足就 422。
@@ -209,17 +224,57 @@ class CostProfileInput(BaseModel):
         缺失必须在入参层被拒，而不是在下游被当成 0。
         """
         if self.fba_fee is not None:
+            if self.uses_package_facts:
+                # 两条路都能给出 FBA 费，同时给就成了两套费用，谁赢都不对。
+                raise ValueError(
+                    "给了 fba_fee 就不需要包装事实（has_lithium_battery 等）："
+                    "两者同时给会出现两套互相独立的费用，无法知道该采信哪一套"
+                )
             return self
 
-        missing = [
-            name
-            for name, value in (("product_class", self.product_class), ("ship_date", self.ship_date))
-            if value is None
-        ]
-        if missing:
+        if self.ship_date is None:
             raise ValueError(
-                f"未提供 fba_fee 时必须给出 {'、'.join(missing)}，"
-                "否则无法从官方费率表算费用包络；FBA 费不允许默认按 0 计"
+                "未提供 fba_fee 时必须给出 ship_date，否则不知道该用哪一期费率表；"
+                "FBA 费不允许默认按 0 计"
+            )
+
+        if self.uses_package_facts:
+            # 包装事实已经把类别推出来了，再手填一次就是两个真相源。
+            conflicting = [
+                name
+                for name, value in (
+                    ("product_class", self.product_class),
+                    ("fba_size_tiers", self.fba_size_tiers),
+                    ("fba_weight_range_oz", self.fba_weight_range_oz),
+                )
+                if value is not None
+            ]
+            if conflicting:
+                raise ValueError(
+                    "给了包装事实（has_lithium_battery）就不能同时给 "
+                    + "、".join(conflicting)
+                    + "：产品类别与尺寸段由包装事实推出，两处不一致时会静默取其中一个"
+                )
+            if self.package_dims_in is None and self.fits_standard_size is None:
+                raise ValueError(
+                    "给了包装事实时必须再给 package_dims_in（三边英寸）"
+                    "或 fits_standard_size（能否装进 18×14×8）之一："
+                    "尺寸段由尺寸决定，不能猜"
+                )
+            if self.package_dims_in is not None:
+                if len(self.package_dims_in) != 3 or any(
+                    v <= 0 for v in self.package_dims_in
+                ):
+                    raise ValueError(
+                        f"package_dims_in 必须是三个正数（英寸），收到 {self.package_dims_in!r}；"
+                        "量不出某一边时不要填 0"
+                    )
+            return self
+
+        if self.product_class is None:
+            raise ValueError(
+                "未提供 fba_fee 时必须给出 product_class（或改给 has_lithium_battery "
+                "让类别由包装事实推出）；官方按非服装/服装/危险品分三套费率，不能默认"
             )
 
         if self.fba_weight_range_oz is not None:

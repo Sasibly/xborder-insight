@@ -579,6 +579,11 @@ class FeeEnvelope:
     fuel_surcharge_rate: float
     assumed_size_tiers: tuple[str, ...] = ()
     assumed_weight_oz: tuple[float, float] | None = None
+    #: 按尺寸段分别裁剪时，各段的重量上界。见 `package.classify()`。
+    assumed_weight_by_tier: tuple[tuple[str, float], ...] = ()
+    #: 计费重量上界与体积重，仅在包装事实参与时给出（oz）。
+    billable_weight_oz: float | None = None
+    dim_weight_oz: float | None = None
     assumptions: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -588,8 +593,12 @@ class FeeEnvelope:
 
     @property
     def narrowed(self) -> bool:
-        """是否用上了「部分已知」（尺寸段或重量范围）。"""
-        return bool(self.assumed_size_tiers) or self.assumed_weight_oz is not None
+        """是否用上了「部分已知」（尺寸段、重量范围或包装事实）。"""
+        return (
+            bool(self.assumed_size_tiers)
+            or self.assumed_weight_oz is not None
+            or bool(self.assumed_weight_by_tier)
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -610,6 +619,15 @@ class FeeEnvelope:
                 None
                 if self.assumed_weight_oz is None
                 else [round(self.assumed_weight_oz[0], 4), round(self.assumed_weight_oz[1], 4)]
+            ),
+            "assumed_weight_by_tier": {
+                tier: round(limit, 4) for tier, limit in self.assumed_weight_by_tier
+            },
+            "billable_weight_oz": (
+                None if self.billable_weight_oz is None else round(self.billable_weight_oz, 4)
+            ),
+            "dim_weight_oz": (
+                None if self.dim_weight_oz is None else round(self.dim_weight_oz, 4)
             ),
             "fuel_surcharge_rate": round(self.fuel_surcharge_rate, 6),
             "assumptions": list(self.assumptions),
@@ -633,6 +651,7 @@ def fee_envelope(
     fuel_surcharge_rate: float | None = None,
     size_tiers: tuple[str, ...] | list[str] | None = None,
     weight_range_oz: tuple[float, float] | None = None,
+    weight_ranges_by_tier: dict[str, tuple[float, float]] | None = None,
 ) -> FeeEnvelope:
     """在缺少精确尺寸与重量时，用已核实的费率行算出 FBA 费的上下界。
 
@@ -647,6 +666,10 @@ def fee_envelope(
     不知道精确重量，但知道「这是大号标准件、肯定不超过 2 lb」，就该把
     这个已知条件用上，而不是拿全表 20 lb 的极值当自己的风险范围。
     不传就是全区间——那是「什么都不知道」时的正确答案，不是缺陷。
+
+    `weight_ranges_by_tier` 是更细的收窄：不同尺寸段的重量上界本来就不同
+    （小号标准件 16 oz 封顶，大号标准件按「实重与体积重取大」到 20 lb）。
+    用一个统一的重量范围套两段，会让大号段的体积重被小号段的上界误伤。
     """
     if product_class not in PRODUCT_CLASSES:
         raise InputInvalid(
@@ -679,6 +702,29 @@ def fee_envelope(
         weight_range = (wlo, whi)
     else:
         weight_range = None
+
+    ranges_by_tier: dict[str, tuple[float, float]] = {}
+    if weight_ranges_by_tier:
+        unknown_tier = [t for t in weight_ranges_by_tier if t not in SIZE_TIERS]
+        if unknown_tier:
+            raise InputInvalid(
+                f"未知的尺寸段: {', '.join(unknown_tier)}",
+                detail=f"可选值: {', '.join(SIZE_TIERS)}",
+            )
+        for tier, pair in weight_ranges_by_tier.items():
+            try:
+                tlo, thi = float(pair[0]), float(pair[1])
+            except (TypeError, ValueError, IndexError) as exc:
+                raise InputInvalid(
+                    f"尺寸段 {tier} 的重量范围不合法: {pair!r}",
+                    detail="格式为 (下界, 上界)，单位 oz",
+                ) from exc
+            if not (math.isfinite(tlo) and math.isfinite(thi)) or tlo <= 0 or thi < tlo:
+                raise InputInvalid(
+                    f"尺寸段 {tier} 的重量范围不合法: {tlo:g}–{thi:g} oz",
+                    detail="下界必须大于 0，上界不得小于下界",
+                )
+            ranges_by_tier[tier] = (tlo, thi)
 
     band = price_band_of(selling_price)
     season = season_of(ship_date)
@@ -743,19 +789,31 @@ def fee_envelope(
     rate = 0.0 if fuel_surcharge_rate is None else float(fuel_surcharge_rate)
     samples: list[tuple[float, FeeRow]] = []
     for row in candidates:
+        # 先按尺寸段的重量上界裁剪，再退回统一的重量范围。
+        # 顺序不能反：统一的 2 lb 上界套在大号段上会抹掉体积重的影响。
+        limit = ranges_by_tier.get(row.size_tier) or weight_range
         low_oz = row.weight_min_oz
         high_oz = float(row.weight_max_oz)
-        if weight_range is not None:
-            low_oz = max(low_oz, weight_range[0])
-            high_oz = min(high_oz, weight_range[1])
+        if limit is not None:
+            low_oz = max(low_oz, limit[0])
+            high_oz = min(high_oz, limit[1])
             if low_oz > high_oz + _EPS:
                 continue
         samples.append((_fee_at(row, low_oz, rate), row))
         samples.append((_fee_at(row, high_oz, rate), row))
 
     if not samples:
+        if ranges_by_tier:
+            shown = "、".join(
+                f"{SIZE_TIER_LABELS.get(t, t)} {lo:g}–{hi:g} oz"
+                for t, (lo, hi) in ranges_by_tier.items()
+            )
+        elif weight_range is not None:
+            shown = f"{weight_range[0]:g}–{weight_range[1]:g} oz"
+        else:
+            shown = "（未给范围）"
         raise ParamUnverified(
-            f"假定的重量范围 {weight_range[0]:g}–{weight_range[1]:g} oz 不落在任何已核实行内",
+            f"假定的重量范围（{shown}）不落在任何已核实行内",
             detail=(
                 "该期该类别该价格带的重量覆盖是 "
                 + "、".join(row.coverage_label for row in candidates[:3])
@@ -781,9 +839,9 @@ def fee_envelope(
     warnings: list[str] = []
     if wanted_tiers:
         assumptions.append(
-            "尺寸段按调用方指定的 "
+            "只在该尺寸段内取包络："
             + "、".join(SIZE_TIER_LABELS.get(t, t) for t in wanted_tiers)
-            + " 取包络；若实际不属于这些段，区间不适用"
+            + "（由包装事实或调用方指定）；若实际不属于这些段，区间不适用"
         )
     if weight_range is not None:
         assumptions.append(
@@ -795,7 +853,16 @@ def fee_envelope(
             "本次没有可核实的燃油附加费率，包络按 0 计提；"
             "若实际有附加费，真实费用会比上界更高，毛利率比区间下界更低"
         )
-    if not wanted_tiers and not weight_range:
+    if ranges_by_tier:
+        assumptions.append(
+            "各尺寸段分别按自己的计费重量上界取包络："
+            + "、".join(
+                f"{SIZE_TIER_LABELS.get(t, t)} ≤{hi:g} oz"
+                for t, (_lo, hi) in sorted(ranges_by_tier.items())
+            )
+            + "（由包装事实推出，见 domain/package.py）"
+        )
+    if not wanted_tiers and not weight_range and not ranges_by_tier:
         warnings.append(
             f"未提供任何尺寸/重量条件，包络覆盖 {len(size_tier_set)} 个尺寸段的全重量区间，"
             f"跨度 ${high_fee - low_fee:.2f}；若知道商品的尺寸段或重量上界，"
@@ -817,6 +884,9 @@ def fee_envelope(
         fuel_surcharge_rate=rate,
         assumed_size_tiers=wanted_tiers or (),
         assumed_weight_oz=weight_range,
+        assumed_weight_by_tier=tuple(
+            (tier, limits[1]) for tier, limits in sorted(ranges_by_tier.items())
+        ),
         assumptions=tuple(assumptions),
         warnings=tuple(warnings),
     )

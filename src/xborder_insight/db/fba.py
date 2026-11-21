@@ -34,6 +34,7 @@ import sqlite3
 from datetime import date
 
 from ..domain import fba as fba_domain
+from ..domain import package as package_domain
 from ..domain.fba import FeeRow, FbaQuote, RateVersion, ScheduleAudit
 from ..errors import DbNotReady, ParamUnverified
 from . import params
@@ -170,6 +171,7 @@ def envelope(
     ship_date: date,
     size_tiers: tuple[str, ...] | list[str] | None = None,
     weight_range_oz: tuple[float, float] | None = None,
+    weight_ranges_by_tier: dict[str, tuple[float, float]] | None = None,
 ) -> fba_domain.FeeEnvelope:
     """不知道尺寸与重量时的 FBA 费范围：读版本 + 读表 + 读燃油费率 → 算包络。
 
@@ -191,12 +193,51 @@ def envelope(
         fuel_surcharge_rate=rate,
         size_tiers=size_tiers,
         weight_range_oz=weight_range_oz,
+        weight_ranges_by_tier=weight_ranges_by_tier,
     )
     if rate is None and why_missing:
         result = dataclasses.replace(
             result, assumptions=result.assumptions + (why_missing,)
         )
     return result
+
+
+def envelope_for_package(
+    conn: sqlite3.Connection,
+    marketplace: str,
+    facts: package_domain.PackageFacts,
+    *,
+    selling_price: float,
+    ship_date: date,
+) -> tuple[package_domain.PackageClass, fba_domain.FeeEnvelope]:
+    """从「包装事实」直接算到费用区间，中间的产品类别/尺寸段不经过调用方。
+
+    这条路径存在的理由：让调用方只回答三个能判断题（含不含锂电池、多重、
+    装不装得进 18×14×8），而不是替它判断「那我该填哪个 product_class、
+    哪个 size_tier」——后两个问题的答案就在这三个事实里，
+    让调用方再填一次，等于给同一次推导留了两个可能不一致的入口。
+    """
+    package = package_domain.classify(facts)
+    quote = envelope(
+        conn,
+        marketplace,
+        product_class=package.product_class,
+        selling_price=selling_price,
+        ship_date=ship_date,
+        size_tiers=package.size_tiers,
+        weight_ranges_by_tier=package.weight_ranges_by_tier(),
+    )
+    quote = dataclasses.replace(
+        quote,
+        billable_weight_oz=next(
+            (float(t.max_oz) for t in package.tiers if t.size_tier == "large_standard"),
+            package.unit_weight_oz,
+        ),
+        dim_weight_oz=package.dim_weight_oz,
+        assumptions=quote.assumptions + package.assumptions,
+        warnings=quote.warnings + package.warnings,
+    )
+    return package, quote
 
 
 def audit(conn: sqlite3.Connection, marketplace: str = "US") -> ScheduleAudit:

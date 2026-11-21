@@ -1,0 +1,411 @@
+"""包装事实 → FBA 查表条件。
+
+这一层解决的是「调用方知道什么」到「费率表要什么」之间的翻译：
+
+    知道：含不含锂电池 / 包装后实重 / 三边尺寸（或只知道装不装得进 18×14×8）
+    费率表要：product_class、size_tier、计费重量
+
+不认识这一层，就会犯两类错，而且两类都不报错：
+
+1. **含锂电池按普货算**。官方分非服装 / 危险品两套表，同一格差 18.8–25.9%。
+   所以 `has_lithium_battery` 没有默认值——它是 BOM 事实，不是偏好。
+2. **把实重当计费重量**。小号标准件按单位重量计费，大号标准件取「实重与体积重
+   较大者」。一个实重 2 lb、包装 18×14×8 的商品，体积重 14.5 lb，按 2 lb 报价
+   会少算 $5 上下。所以这里给出的从来不是「计费重量 = 实重」，而是
+   「计费重量上界」，并且把它是怎么来的写清楚。
+
+三个数字都是官方口径，不在这里重新定义：
+    体积重（oz）   = 长 × 宽 × 高 ÷ 139（英寸 → 磅）× 16
+    小号标准件上限 = 单位重量 16 oz（且不取体积重）
+    大号标准件上限 = 计费重量 20 lb，三边分别 ≤ 18 / 14 / 8 英寸
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+from ..errors import InputInvalid, ParamUnverified
+
+# ---------------------------------------------------------------- 官方口径
+
+#: 体积重除数（英寸³ → 磅）。官方用 139，不是 166（166 是部分承运商的口径）。
+DIM_WEIGHT_DIVISOR = 139.0
+
+#: 大号标准件的三边上限，**按长度降序**：最长 ≤18、次长 ≤14、最短 ≤8。
+STANDARD_MAX_DIMS_IN = (18.0, 14.0, 8.0)
+
+#: 小号标准件的单位重量上限。这一档**不取体积重**。
+SMALL_STANDARD_MAX_OZ = 16.0
+
+#: 大号标准件的计费重量上限（20 lb）。超过即不属于标准尺寸。
+LARGE_STANDARD_MAX_OZ = 20.0 * 16.0
+
+#: 重量区间的下界。费率表不接受 0 重量，用 0.1 oz 代表「最轻的那一档」。
+MIN_WEIGHT_OZ = 0.1
+
+_EPS = 1e-9
+
+
+def dimensional_weight_oz(dims_in: tuple[float, float, float]) -> float:
+    """体积重（oz）= 长 × 宽 × 高 ÷ 139 × 16。
+
+    单位必须是英寸。承运商与平台的体积重口径不止一种（139 / 166 / 5000），
+    用错除数的方向是**低估**费用，所以除数在这里写死，并由测试钉住。
+    """
+    length, width, height = (float(v) for v in dims_in)
+    return length * width * height / DIM_WEIGHT_DIVISOR * 16.0
+
+
+def standard_edge_violation(
+    dims_in: tuple[float, float, float],
+) -> tuple[int, float, float] | None:
+    """检查三边是否都装得进 18×14×8。
+
+    返回 `(第几长边(1/2/3), 实际值, 上限)`；全部满足返回 None。
+    先按长度降序排，再逐位比对——不排序的话，18×8×14 这种写法会把
+    次长边 14 拿去和上限 14 比、最短边 8 拿去和上限 18 比，判成通过。
+    """
+    ordered = sorted((float(v) for v in dims_in), reverse=True)
+    for index, (value, limit) in enumerate(zip(ordered, STANDARD_MAX_DIMS_IN), start=1):
+        if value > limit + _EPS:
+            return index, value, limit
+    return None
+
+
+def fits_standard(dims_in: tuple[float, float, float]) -> bool:
+    return standard_edge_violation(dims_in) is None
+
+
+# ---------------------------------------------------------------- 输入
+
+
+@dataclass(frozen=True)
+class PackageFacts:
+    """调用方对包装知道的那点事。
+
+    `has_lithium_battery` 故意没有默认值：它决定用哪套费率表，
+    猜错的代价是每件 $1 上下且完全看不出来。
+    """
+
+    has_lithium_battery: bool
+    #: 包装后实重（oz）。可以是实测值，也可以是上界——按上界用，不额外放宽。
+    unit_weight_oz: float | None = None
+    #: 包装后三边（英寸），顺序无所谓，内部会按长度降序。
+    dims_in: tuple[float, float, float] | None = None
+    #: 只知道「装不装得进 18×14×8」时用这个；给了 dims 就以 dims 为准。
+    fits_standard_size: bool | None = None
+    #: 包装体积上界（立方英寸）。不知道三边、但知道「肯定没超过一个鞋盒」时用这个：
+    #: 它直接约束体积重，而「装得进 18×14×8」只是个二元判断，对费用几乎不构成约束。
+    volume_ceiling_in3: float | None = None
+
+
+@dataclass(frozen=True)
+class TierLimit:
+    """某个尺寸段在本次事实下的计费重量上界。"""
+
+    size_tier: str
+    max_oz: float
+    basis: str
+
+
+@dataclass(frozen=True)
+class PackageClass:
+    """包装事实的推导结果：用哪套表、可能是哪几个尺寸段、各段重量上界。"""
+
+    product_class: str
+    tiers: tuple[TierLimit, ...]
+    unit_weight_oz: float | None
+    dim_weight_oz: float | None
+    dims_in: tuple[float, float, float] | None
+    volume_ceiling_in3: float | None = None
+    assumptions: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def weight_ranges_by_tier(self) -> dict[str, tuple[float, float]]:
+        """给 `fee_envelope()` 用的「按尺寸段分别裁剪重量」。"""
+        return {t.size_tier: (MIN_WEIGHT_OZ, t.max_oz) for t in self.tiers}
+
+    @property
+    def size_tiers(self) -> tuple[str, ...]:
+        return tuple(t.size_tier for t in self.tiers)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "product_class": self.product_class,
+            "size_tiers": list(self.size_tiers),
+            "unit_weight_oz": None if self.unit_weight_oz is None else round(self.unit_weight_oz, 4),
+            "dim_weight_oz": None if self.dim_weight_oz is None else round(self.dim_weight_oz, 4),
+            "dims_in": None if self.dims_in is None else [round(v, 4) for v in self.dims_in],
+            "volume_ceiling_in3": self.volume_ceiling_in3,
+            "tiers": [
+                {
+                    "size_tier": t.size_tier,
+                    "max_oz": round(t.max_oz, 4),
+                    "basis": t.basis,
+                }
+                for t in self.tiers
+            ],
+            "assumptions": list(self.assumptions),
+            "warnings": list(self.warnings),
+        }
+
+
+# ---------------------------------------------------------------- 推导
+
+_PRODUCT_CLASS_BY_BATTERY = {True: "dangerous_goods", False: "non_apparel"}
+_PRODUCT_CLASS_LABEL = {
+    "non_apparel": "普通商品（非服装）",
+    "dangerous_goods": "危险品（含锂电池）",
+}
+
+
+def classify(facts: PackageFacts) -> PackageClass:
+    """把包装事实翻成「产品类别 + 可能的尺寸段 + 各段计费重量上界」。
+
+    保守方向只有一个：**宁可把费用算高，不把费用算低**。所以
+    「实重 2 lb 但不知道包装多大」不会得到 2 lb 的计费重量，
+    而是得到 18×14×8 允许的最大体积重 14.5 lb——因为你没排除那种箱子。
+    """
+    if not isinstance(facts.has_lithium_battery, bool):
+        raise InputInvalid(
+            f"has_lithium_battery 必须是布尔值，收到 {facts.has_lithium_battery!r}",
+            detail=(
+                "是否含锂离子/锂金属/锂聚合物电池是 BOM 事实，没有第三态。"
+                "判成普货会按非服装表计费，每件少算约 $1"
+            ),
+        )
+
+    product_class = _PRODUCT_CLASS_BY_BATTERY[facts.has_lithium_battery]
+    assumptions: list[str] = [
+        (
+            "含锂电池（锂离子/锂金属/锂聚合物任一）→ 按危险品费率表"
+            if facts.has_lithium_battery
+            else "不含锂电池 → 按普通商品（非服装）费率表"
+        )
+        + "；两套表不可混用"
+    ]
+    warnings: list[str] = []
+
+    # ---------- 1. 三边：先确认还在标准尺寸范围内 ----------
+    dims = _validate_dims(facts.dims_in)
+    edge = None
+    if dims is not None:
+        edge = standard_edge_violation(dims)
+        if edge is not None:
+            position, value, limit = edge
+            ordinal = {1: "最长边", 2: "次长边", 3: "最短边"}[position]
+            raise ParamUnverified(
+                f"包装{ordinal} {value:g} 英寸超过标准尺寸上限 {limit:g} 英寸，"
+                "不属于标准尺寸",
+                detail=(
+                    f"三边上限为 {STANDARD_MAX_DIMS_IN[0]:g} × "
+                    f"{STANDARD_MAX_DIMS_IN[1]:g} × {STANDARD_MAX_DIMS_IN[2]:g} 英寸，"
+                    "三条须同时满足。任一条超出即落入大件/超大件（large_bulky / "
+                    "extra_large），这两段的费率尚未录入，无法报价——"
+                    "也不会拿标准尺寸的费率顶替"
+                ),
+            )
+        if facts.fits_standard_size is False:
+            raise InputInvalid(
+                "dims_in 三边均在 18×14×8 以内，与 fits_standard_size=False 矛盾",
+                detail="两处说法不一致时不能猜哪个对，请改掉其中一个",
+            )
+    else:
+        if facts.fits_standard_size is None:
+            raise InputInvalid(
+                "缺少包装三边，也未声明能否装进 18×14×8",
+                detail=(
+                    "这是判断题不是估算题：最长边是否 ≤18、次长边是否 ≤14、"
+                    "最短边是否 ≤8。三条同时满足才算标准尺寸；不知道就没法定尺寸段，"
+                    "而尺寸段不能猜——猜小一档费率低 $0.5–1"
+                ),
+            )
+        if not facts.fits_standard_size:
+            raise ParamUnverified(
+                "包装超出 18×14×8，不属于标准尺寸，大件/超大件费率尚未录入",
+                detail=(
+                    "该情形会落入 large_bulky / extra_large 段，这两段的官方费率"
+                    "尚未落库。补录后才能报价，现在不能用标准尺寸费率顶替"
+                ),
+            )
+        assumptions.append(
+            "按调用方声明「三边均在 18×14×8 以内」定标准尺寸；"
+            "这一条是声明，不是实测——任一条超出即不属于标准尺寸"
+        )
+
+    # ---------- 2. 体积重 ----------
+    volume_ceiling = _validate_volume(facts.volume_ceiling_in3)
+    if dims is not None:
+        dim_weight = dimensional_weight_oz(dims)
+        actual_volume = dims[0] * dims[1] * dims[2]
+        if volume_ceiling is not None and actual_volume > volume_ceiling + _EPS:
+            raise InputInvalid(
+                f"三边算出的体积 {actual_volume:g} in³ 超过声明的体积上界 "
+                f"{volume_ceiling:g} in³",
+                detail="两处说法不一致时不能猜哪个对，请改掉其中一个",
+            )
+        assumptions.append(
+            f"体积重 {dim_weight:.1f} oz（{dims[0]:g}×{dims[1]:g}×{dims[2]:g} 英寸"
+            f" ÷ {DIM_WEIGHT_DIVISOR:g} × 16）；大号标准件取实重与此值较大者计费"
+        )
+    elif volume_ceiling is not None:
+        # 有体积上界：体积重随之有上界，这比「装得进 18×14×8」有用得多。
+        dim_weight = volume_ceiling / DIM_WEIGHT_DIVISOR * 16.0
+        assumptions.append(
+            f"未给三边，体积按声明的上界 {volume_ceiling:g} in³ 计 → "
+            f"体积重上界 {dim_weight:.1f} oz（{dim_weight / 16:.2f} lb）"
+        )
+    else:
+        # 没给三边，也没有体积上界：体积重的可能上界就是 18×14×8 装满时。
+        dim_weight = dimensional_weight_oz(STANDARD_MAX_DIMS_IN)
+        assumptions.append(
+            f"未给三边，体积重按 18×14×8 的上界 {dim_weight:.1f} oz"
+            f"（={dim_weight / 16:.2f} lb）计；要收窄就补三边尺寸或体积上界"
+        )
+        warnings.append(
+            f"大号标准件按「实重与体积重较大者」计费，体积重上界 "
+            f"{dim_weight:.1f} oz 远高于你给的实重上界——若包装接近 18×14×8，"
+            "费用按体积重走，不按实重走。只知道「装得进」不足以收窄费用："
+            "那是个二元判断，不约束体积重"
+        )
+
+    # ---------- 3. 实重 ----------
+    unit = _validate_unit_weight(facts.unit_weight_oz)
+
+    tiers: list[TierLimit] = []
+    if unit is None:
+        billable = LARGE_STANDARD_MAX_OZ
+        assumptions.append(
+            "未给实重，小号标准件按 16 oz 上界、大号标准件按 20 lb 上界取包络"
+        )
+        tiers.append(
+            TierLimit("small_standard", SMALL_STANDARD_MAX_OZ, "单位重量（不取体积重）")
+        )
+        tiers.append(
+            TierLimit("large_standard", LARGE_STANDARD_MAX_OZ, "实重与体积重取大")
+        )
+        return PackageClass(
+            product_class=product_class,
+            tiers=tuple(tiers),
+            unit_weight_oz=None,
+            dim_weight_oz=dim_weight,
+            dims_in=dims,
+            volume_ceiling_in3=volume_ceiling,
+            assumptions=tuple(assumptions),
+            warnings=tuple(warnings),
+        )
+
+    if unit > LARGE_STANDARD_MAX_OZ + _EPS:
+        raise ParamUnverified(
+            f"包装实重 {unit / 16:.2f} lb 超过大号标准件上限 20 lb，不属于标准尺寸",
+            detail=(
+                "超过 20 lb 即落入大件/超大件段，其费率尚未录入。"
+                "注意判定用的是计费重量（实重与体积重取大），实重已超标时无需再算体积重"
+            ),
+        )
+
+    billable_dims = max(unit, dim_weight)
+    if billable_dims > LARGE_STANDARD_MAX_OZ + _EPS:
+        raise ParamUnverified(
+            f"计费重量 {billable_dims / 16:.2f} lb 超过大号标准件上限 20 lb，"
+            "不属于标准尺寸",
+            detail=(
+                f"实重 {unit / 16:.2f} lb、体积重 {dim_weight / 16:.2f} lb，取大者 "
+                f"{billable_dims / 16:.2f} lb。体积重超标同样会掉出标准尺寸，"
+                "大件/超大件费率尚未录入"
+            ),
+        )
+
+    # 小号标准件：单位重量 ≤16 oz 才可能，且不取体积重。
+    if unit <= SMALL_STANDARD_MAX_OZ + _EPS:
+        tiers.append(
+            TierLimit("small_standard", unit, "单位重量（不取体积重）")
+        )
+        # 同一个包裹也可能因三边超出小号标准上限而按大号标准件计费——
+        # 小号标准件的三边上限本模块未校验，所以两种可能都保留。
+        warnings.append(
+            "实重 ≤16 oz 只说明**够得着**小号标准件；若包装三边超出小号标准件的"
+            "尺寸上限，同一件货会按大号标准件计费并取体积重。本模块只校验了 "
+            "18×14×8，未校验小号标准件的三边上限（见 docs/07 H13），"
+            "所以两个尺寸段都保留在区间里"
+        )
+    tiers.append(
+        TierLimit(
+            "large_standard",
+            min(billable_dims, LARGE_STANDARD_MAX_OZ),
+            "实重与体积重取大",
+        )
+    )
+
+    assumptions.append(
+        f"实重 {unit:.1f} oz、体积重 {dim_weight:.1f} oz，"
+        f"大号标准件计费重量按较大者 {billable_dims:.1f} oz 取上界；"
+        "实重按上界用，费用区间下端仍从最轻档起算——给的是「不超过多少」，"
+        "不能据此假定实际不会更轻"
+    )
+    return PackageClass(
+        product_class=product_class,
+        tiers=tuple(tiers),
+        unit_weight_oz=unit,
+        dim_weight_oz=dim_weight,
+        dims_in=dims,
+        volume_ceiling_in3=volume_ceiling,
+        assumptions=tuple(assumptions),
+        warnings=tuple(warnings),
+    )
+
+
+def _validate_dims(
+    dims: tuple[float, float, float] | None,
+) -> tuple[float, float, float] | None:
+    if dims is None:
+        return None
+    try:
+        values = tuple(float(v) for v in dims)
+    except (TypeError, ValueError) as exc:
+        raise InputInvalid(
+            f"包装三边必须是三个数值（英寸），收到 {dims!r}",
+            detail="例：(12, 9, 6) 表示 12×9×6 英寸；单位必须统一为英寸",
+        ) from exc
+    if len(values) != 3:
+        raise InputInvalid(f"包装三边必须给满三个值，收到 {len(values)} 个：{dims!r}")
+    if any(not math.isfinite(v) or v <= 0 for v in values):
+        raise InputInvalid(
+            f"包装三边必须是正的有限数值，收到 {dims!r}",
+            detail="量不出某一边时不要填 0 或估算值：填 0 会让体积重变成 0，"
+            "等于把费用算成最低档",
+        )
+    return values  # type: ignore[return-value]
+
+
+def _validate_unit_weight(unit_oz: float | None) -> float | None:
+    if unit_oz is None:
+        return None
+    try:
+        value = float(unit_oz)
+    except (TypeError, ValueError) as exc:
+        raise InputInvalid(f"实重必须是数值（oz），收到 {unit_oz!r}") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise InputInvalid(
+            f"实重必须是正的有限数值，收到 {unit_oz!r}",
+            detail="没有实重就传 None，由包络按尺寸段上限取界；填 0 会让费用按最轻档算",
+        )
+    return value
+
+
+def _validate_volume(volume_in3: float | None) -> float | None:
+    if volume_in3 is None:
+        return None
+    try:
+        value = float(volume_in3)
+    except (TypeError, ValueError) as exc:
+        raise InputInvalid(
+            f"体积上界必须是数值（立方英寸），收到 {volume_in3!r}"
+        ) from exc
+    if not math.isfinite(value) or value <= 0:
+        raise InputInvalid(
+            f"体积上界必须是正的有限数值，收到 {volume_in3!r}",
+            detail="没有体积上界就传 None；填 0 会让体积重变成 0，等于按最轻档计费",
+        )
+    return value
