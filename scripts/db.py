@@ -10,6 +10,9 @@
     python scripts/db.py fba                 # FBA 费率维表覆盖率与缺口
     python scripts/db.py fba-envelope --product-class dangerous_goods --price 59.99
                                              # 没有真实尺寸重量时，FBA 费能确定到什么范围
+    python scripts/db.py fba-export          # 导出 402 格逐格复核表（只读库）
+    python scripts/db.py fba-review --in data/review/fba_rates_2026-11-21.csv
+                                             # 回收复核结论并对账（只读库）
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -28,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from xborder_insight.db import fba as fba_db  # noqa: E402
+from xborder_insight.db import fba_review  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
@@ -573,7 +577,104 @@ def _dump_transport(args) -> int:
     if result.verdict == transport.VERDICT_NEED_INFO:
         return 3
     return 0
-    return 0 if result.ok else 1
+
+
+def _export_path(args) -> Path:
+    if args.out:
+        return Path(args.out)
+    return ROOT / "data" / "review" / f"fba_rates_{date.today().isoformat()}.csv"
+
+
+def _dump_export(conn, args) -> int:
+    """导出 402 格为复核表。只读库，不写库。"""
+    cells = fba_review.load_cells(conn, args.market)
+    if not cells:
+        print(f"[无可导出] 市场 {args.market} 的费率表为空")
+        return 1
+    path = _export_path(args)
+    fba_review.write_sheet(path, cells)
+
+    print("FBA 费率逐格复核表")
+    print("-" * 62)
+    print(f"  市场 {args.market} · {len(cells)} 格 → {path}")
+    by_version: dict[str, int] = {}
+    for cell in cells:
+        by_version[cell.version_key] = by_version.get(cell.version_key, 0) + 1
+    for key, count in by_version.items():
+        print(f"    · {key:<22}{count:>4} 格")
+    tiers: dict[str, int] = {}
+    for cell in cells:
+        tiers[cell.size_tier] = tiers.get(cell.size_tier, 0) + 1
+    print("  按尺寸段：" + "　".join(f"{k} {v}" for k, v in sorted(tiers.items())))
+    print()
+    print("  怎么填：")
+    print(f"    · 在 `{fba_review.COL_VERDICT}` 列写 ok 或 mismatch（也可写 对 / 错）；留空 = 未复核")
+    print(f"    · mismatch 必须在 `{fba_review.COL_NOTE}` 写清错在哪，否则导入会被拒")
+    print(f"    · `{fba_review.COL_REVIEWER}` 与 `{fba_review.COL_DATE}` 必填，日期 YYYY-MM-DD")
+    print("    · 金额列是待核对的快照，不要改——改了等于改数据，不是复核")
+    print("  填完跑：")
+    print(f"    python scripts/db.py fba-review --in {path}")
+    return 0
+
+
+def _dump_review(conn, args) -> int:
+    """回收复核表并对账。退出码：0 全一致 / 1 有错或格式问题 / 3 还没核完。"""
+    path = Path(args.sheet)
+    if not path.exists():
+        print(f"[找不到] {path}")
+        return 2
+    cells = fba_review.load_cells(conn, args.market)
+    try:
+        rows = fba_review.read_sheet(path)
+    except ValueError as exc:
+        print(f"[表格不可用] {exc}")
+        return 2
+    summary = fba_review.summarize(cells, rows)
+
+    print("FBA 费率逐格复核　对账结果")
+    print("-" * 62)
+    print(f"  库内 {summary.total_cells} 格 · 表内已给结论 {summary.reviewed} 格"
+          f"（{summary.coverage:.1%}）")
+    print(f"  ok {summary.ok} · mismatch {summary.mismatch} · 未复核 {summary.pending}")
+    if summary.unknown_ids:
+        print(f"  库里不存在的行号 {len(summary.unknown_ids)} 个")
+
+    pairs = fba_review.mismatched_cells(cells, summary)
+    if pairs:
+        print("\n  mismatch（按此修数据，改完重新导出再核）：")
+        for cell, row in pairs:
+            weight = (
+                f"{_fmt_oz(cell.weight_min_oz)}–{_fmt_oz(cell.weight_max_oz)} oz"
+            )
+            print(
+                f"    · {cell.version_key} / {cell.size_tier} / {cell.product_class}"
+                f" / {cell.price_band} / {weight}"
+            )
+            print(
+                f"      库里 ${cell.base_fee_usd:.2f}"
+                f"（含首重 {_fmt_oz(cell.included_oz)} oz、续重 ${cell.per_increment_usd:.2f}）"
+                f"　{row.reviewer} {row.reviewed_at}：{row.note}"
+            )
+
+    if summary.problems:
+        print(f"\n  格式问题 {len(summary.problems)} 条（未计入统计）：")
+        for line in summary.problems[:20]:
+            print(f"    ! {line}")
+        if len(summary.problems) > 20:
+            print(f"    … 另有 {len(summary.problems) - 20} 条")
+
+    if summary.pending:
+        print(f"\n  还没核的 {summary.pending} 格，前 10 个行号："
+              f"{'、'.join(summary.pending_ids[:10])}")
+
+    print()
+    if summary.exit_code == 0:
+        print("  结论：全部格已复核且与官方页一致——可以对外写「逐格复核通过」。")
+    elif summary.exit_code == 1:
+        print("  结论：还不能说复核通过（有 mismatch 或格式问题）。")
+    else:
+        print("  结论：复核未完成。未复核的格不得在对外表述里算作「已核对」。")
+    return summary.exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -664,6 +765,20 @@ def main(argv: list[str] | None = None) -> int:
     reset = sub.add_parser("reset", help="回滚到 0 再升级（清空数据）")
     reset.add_argument("--yes", action="store_true")
 
+    exp_parser = sub.add_parser(
+        "fba-export", help="导出 FBA 费率逐格复核表（CSV，只读库）"
+    )
+    exp_parser.add_argument("--market", default="US")
+    exp_parser.add_argument("--out", default=None,
+                            help="默认 data/review/fba_rates_<今天>.csv")
+
+    rev_parser = sub.add_parser(
+        "fba-review", help="回收逐格复核表并对账（只读库）"
+    )
+    rev_parser.add_argument("--in", dest="sheet", required=True,
+                            help="填好的复核表路径")
+    rev_parser.add_argument("--market", default="US")
+
     args = parser.parse_args(argv)
 
     if args.command == "roundtrip":
@@ -704,6 +819,10 @@ def main(argv: list[str] | None = None) -> int:
             return _dump_envelope(conn, args)
         if args.command == "fba-profile":
             return _dump_profile(conn, args)
+        if args.command == "fba-export":
+            return _dump_export(conn, args)
+        if args.command == "fba-review":
+            return _dump_review(conn, args)
         if args.command == "up":
             applied = migrate.upgrade(conn, args.target if args.target is not None else migrate.LATEST)
             print(f"已应用 {len(applied)} 个迁移：{applied or '无需变更'}")

@@ -8,3 +8,4 @@ data/interim/
 reports/
 *.sqlite3
 *.sqlite3.bak-*
+data/review/
