@@ -355,6 +355,10 @@ def _dump_envelope(conn, args) -> int:
 
     ship_date = args.ship_date or date.today()
 
+    if args.exact_weight and args.unit_oz is None and args.unit_lb is None:
+        print("[无法给出包络] input_invalid: --exact-weight 必须同时给实重（--unit-lb / --unit-oz）")
+        return 1
+
     try:
         if args.lithium is not None:
             facts = PackageFacts(
@@ -370,6 +374,7 @@ def _dump_envelope(conn, args) -> int:
                 facts,
                 selling_price=args.price,
                 ship_date=ship_date,
+                exact_weight=args.exact_weight,
             )
         else:
             package = None
@@ -499,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
                             help="裸查询入口：重量上界（oz），不区分尺寸段")
     env_parser.add_argument("--max-lb", type=float, default=None,
                             help="裸查询入口：重量上界（lb），不区分尺寸段")
+    env_parser.add_argument("--exact-weight", action="store_true",
+                            help="实重是实测值而非上界估计：区间收成单点（须与 --dims 一起给）")
 
     prof_parser = sub.add_parser(
         "fba-profile",

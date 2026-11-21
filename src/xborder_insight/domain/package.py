@@ -215,8 +215,21 @@ class PackageClass:
     assumptions: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
-    def weight_ranges_by_tier(self) -> dict[str, tuple[float, float]]:
-        """给 `fee_envelope()` 用的「按尺寸段分别裁剪重量」。"""
+    def weight_ranges_by_tier(
+        self, *, exact: bool = False
+    ) -> dict[str, tuple[float, float]]:
+        """给 `fee_envelope()` 用的「按尺寸段分别裁剪重量」。
+
+        默认下端从 `MIN_WEIGHT_OZ` 起算：实重被当作**上界**用（「不超过这么多」），
+        所以不能假定实际不会更轻，区间下端必须敞着——把它收成实数，等于
+        用一次可能的称量误差换一个看起来精确的数。
+
+        `exact=True` 只在实重是**实测值**、且上游明确接受「按这一磅计费」时用：
+        此时上下端都取计费重量，返回的是单点而不是区间。计量方式（不足 1 lb
+        向上取整）仍由 `fee_envelope` 按官方口径处理，这里不自行取整。
+        """
+        if exact:
+            return {t.size_tier: (t.max_oz, t.max_oz) for t in self.tiers}
         return {t.size_tier: (MIN_WEIGHT_OZ, t.max_oz) for t in self.tiers}
 
     @property

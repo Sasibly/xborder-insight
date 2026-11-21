@@ -209,6 +209,7 @@ def envelope_for_package(
     *,
     selling_price: float,
     ship_date: date,
+    exact_weight: bool = False,
 ) -> tuple[package_domain.PackageClass, fba_domain.FeeEnvelope]:
     """从「包装事实」直接算到费用区间，中间的产品类别/尺寸段不经过调用方。
 
@@ -225,14 +226,15 @@ def envelope_for_package(
         selling_price=selling_price,
         ship_date=ship_date,
         size_tiers=package.size_tiers,
-        weight_ranges_by_tier=package.weight_ranges_by_tier(),
+        weight_ranges_by_tier=package.weight_ranges_by_tier(exact=exact_weight),
     )
     quote = dataclasses.replace(
         quote,
-        billable_weight_oz=next(
-            (float(t.max_oz) for t in package.tiers if t.size_tier == "large_standard"),
-            package.unit_weight_oz,
-        ),
+        # 计费重量取各段上界的**最大者**：小号标准件与大号标准件并存时，
+        # 区间上端落在大号段；大件（bulky）没有小号标准件这一段，
+        # 早先按 "large_standard" 取会 fallback 到实重，把 38.85 lb 的体积重
+        # 显示成 18.5 lb——数字自相矛盾，且恰好发生在最需要看对的大件档。
+        billable_weight_oz=max(float(t.max_oz) for t in package.tiers),
         dim_weight_oz=package.dim_weight_oz,
         assumptions=quote.assumptions + package.assumptions,
         warnings=quote.warnings + package.warnings,

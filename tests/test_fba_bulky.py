@@ -136,3 +136,59 @@ def test_fuel_surcharge_applies_to_bulky_too(conn):
     assert quote.total_fee_usd == pytest.approx(
         quote.subtotal_usd + quote.fuel_surcharge_usd, abs=1e-6
     )
+
+
+def test_billable_weight_reports_the_larger_of_unit_and_dim(conn):
+    """24×15×15 / 18.5 lb：体积重 38.85 lb 才是计费重量。
+
+    这条钉的是一个显示缺陷：早先按 "large_standard" 段取计费上界，
+    大件包里没有这一段，于是 fallback 到实重，输出「计费重量 18.5 lb；
+    其中体积重 38.85 lb」——自相矛盾，且恰好发生在最需要看对的大件档。
+    """
+    from xborder_insight.domain import package as pkg
+
+    facts = pkg.PackageFacts(False, 18.5 * 16, (24.0, 15.0, 15.0))
+    _, envelope = fba_db.envelope_for_package(
+        conn, MARKET, facts, selling_price=59.99, ship_date=PEAK_DAY,
+    )
+    assert envelope.dim_weight_oz is not None
+    assert envelope.billable_weight_oz == pytest.approx(envelope.dim_weight_oz)
+    assert envelope.billable_weight_oz > facts.unit_weight_oz
+
+
+def test_exact_weight_collapses_the_envelope_to_a_single_number(conn):
+    """实测实重 + 实测三边 → 单点；上界仍按「不足 1 lb 向上取整」计费。"""
+    from xborder_insight.domain import package as pkg
+
+    facts = pkg.PackageFacts(False, 18.5 * 16, (24.0, 15.0, 15.0))
+    loose, env_loose = fba_db.envelope_for_package(
+        conn, MARKET, facts, selling_price=59.99, ship_date=PEAK_DAY,
+    )
+    _, env_exact = fba_db.envelope_for_package(
+        conn, MARKET, facts, selling_price=59.99, ship_date=PEAK_DAY, exact_weight=True,
+    )
+    # 默认口径：实重被当作上界，区间下端仍从最轻档起算（1 lb 的 base 费）
+    assert env_loose.low_usd < env_loose.high_usd
+    assert env_loose.low_row is not None
+    assert env_loose.low_usd == pytest.approx(
+        env_loose.low_row.base_fee_usd * (1 + 0.035), abs=0.01
+    )
+    # 实测口径：收成单点，且上界一分不差
+    assert env_exact.low_usd == pytest.approx(env_exact.high_usd)
+    assert env_exact.high_usd == pytest.approx(env_loose.high_usd)
+    assert env_exact.spread_usd == pytest.approx(0.0)
+    assert loose.size_tiers == env_exact.size_tiers
+
+
+def test_weight_ranges_by_tier_exact_uses_billable_on_both_ends(conn):
+    """exact=True 时每段上下端都取计费上界；exact=False 时下端敞着。"""
+    from xborder_insight.domain import package as pkg
+
+    klass = pkg.classify(pkg.PackageFacts(False, 4.8 * 16, (10.5, 9.2, 8.4)))
+    loose = klass.weight_ranges_by_tier()
+    tight = klass.weight_ranges_by_tier(exact=True)
+    for tier, (lo, hi) in loose.items():
+        assert lo == pytest.approx(pkg.MIN_WEIGHT_OZ)
+        tlo, thi = tight[tier]
+        assert tlo == pytest.approx(hi)
+        assert thi == pytest.approx(hi)
