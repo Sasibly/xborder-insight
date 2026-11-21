@@ -1,19 +1,22 @@
-"""市场典型包装规格（assumed 档）→ 尺寸段与费用能不能算得出来。
-
-**这一层和 `cost_params` 是两种东西，不能混。**
+"""包装规格 → 尺寸段与费用能不能算得出来。**两档口径，两个文件，不混装。**
 
 `cost_params` 存的是官方发布或实测的参数，状态只有 `draft` / `verified`，
-`verified` 必须带来源与核实日期。这里存的是「在售典型机型的公开包装规格」——
-它是由品类推断单品的假设，不是任何一个真实 SKU 的事实，所以状态恒为
-`assumed`，不得升级，也不得写进 `cost_params`。
+`verified` 必须带来源与核实日期。这个模块存的是包装规格，分两档：
 
-存在的理由：H2 要求按 SKU 给四列，但在拿到实测值之前决策链一直停在
+| 文件 | status | 是什么 | 能当事实用吗 |
+| --- | --- | --- | --- |
+| `market_typical.json` | `assumed` | 在售典型机型的公开包装规格，由品类推断单品 | **不能**。永远不得升级为 verified |
+| `measured_skus.json` | `measured` | 对某台具体机器的实测，带量测人与日期 | 尺寸重量的部分可以；含锂另有 `battery_confirmed` 标记 |
+
+为什么必须分开存：一个文件里既有猜的又有量过的，「哪几行能当事实用」就只能靠人记，
+而那正是这类错误发生的地方。所以 status 是**文件级**的，加载器拒绝混装。
+
+assumed 档存在的理由：H2 要求按 SKU 给四列，但在拿到实测值之前决策链一直停在
 `NEED_MORE_INFO`。用典型规格跑一遍，能回答一个比「不知道」更有用的问题：
 
     这个品类里，包装尺寸会不会把商品挤出「标准尺寸」段？
 
-如果答案是「几乎肯定会」，那这一列就不是填空题，而是必须实测的前置条件——
-因为大件/超大件费率整段未录，超出即无报价，不是「差几个点」的问题。
+如果答案是「几乎肯定会」，那这一列就不是填空题，而是必须实测的前置条件。
 
 **假设层的结论必须自己交代可信度**，所以每个品类给两台不同机型的实机规格：
 
@@ -23,6 +26,10 @@
 
 5% 这个阈值不是拍出来的：18×14×8 的 5% 是 0.9 / 0.7 / 0.4 英寸，比常见纸箱
 公差与卷尺读数误差都小。落在这个带宽里的判定，换一把尺子就会翻转。
+
+实测档（`measured`）要守的是另一条：**量过的和猜过的必须长得不一样**。
+所以它强制每台带 `measured_at` 与 `battery_confirmed`——含锂没逐台核过就写
+`battery_confirmed: false`，下游看到这个标记就知道那一列是推的，不是查的。
 """
 
 from __future__ import annotations
@@ -38,9 +45,22 @@ from . import package as pkg
 #: 判定为「只是勉强」的裕度带宽。见模块注释：5% 小于纸箱公差与读数误差。
 TIGHT_MARGIN_RATIO = 0.05
 
+#: 两档数据口径。**一个文件只能是一种**，不允许混装。
+#:   assumed  = 由品类推断单品的假设，永远不得升级（本模块的原意）
+#:   measured = 对某台具体机器的实测，带量测人与日期
+#: 混装会让「哪几行是猜的」变得看不出来，所以这里用文件级 status 而不是行级标记。
+PROFILE_ASSUMED = "assumed"
+PROFILE_MEASURED = "measured"
+PROFILE_STATUSES = (PROFILE_ASSUMED, PROFILE_MEASURED)
+
 #: 默认画像文件。放 data/ 下而不是打包进包里：它是可替换的数据，不是代码。
 DEFAULT_PROFILE_PATH = (
     Path(__file__).resolve().parents[3] / "data" / "profiles" / "market_typical.json"
+)
+
+#: 实测档画像（对真实机器的量测）。与 assumed 档**不同文件**，见模块注释。
+MEASURED_PROFILE_PATH = (
+    Path(__file__).resolve().parents[3] / "data" / "profiles" / "measured_skus.json"
 )
 
 _EDGE_LABELS = {1: "最长边", 2: "次长边", 3: "最短边"}
@@ -92,7 +112,7 @@ class EdgeMargin:
 
 @dataclass(frozen=True)
 class VariantSpec:
-    """一台在售机型的公开包装规格。"""
+    """一台在售机型（或一台实测机）的包装规格。"""
 
     model: str
     dims_in: tuple[float, float, float]
@@ -102,6 +122,11 @@ class VariantSpec:
     battery_basis: str
     source_url: str
     source_quote: str
+    #: 含锂这一列本身是否被确认过。**false 表示「取值是按证据推的，没人逐台核对过」。**
+    #: assumed 档默认 True（它本来就没打算当事实）；measured 档必须显式写。
+    battery_confirmed: bool = True
+    #: 实测日期。只有 measured 档要求，assumed 档留空。
+    measured_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -297,6 +322,43 @@ def build_category(spec: CategorySpec) -> CategoryReport:
 
 # ---------------------------------------------------------------- 读盘
 
+@dataclass(frozen=True)
+class Profile:
+    """一整个画像文件：口径 + 证据来源 + 品类。
+
+    `status` 是文件级的，不是行级的——一个文件里不允许既有猜的又有量过的。
+    否则「哪几行能当事实用」就得靠人去记，而那正是这类错误发生的地方。
+    """
+
+    status: str
+    captured_at: str
+    evidence: str
+    categories: tuple[CategorySpec, ...]
+    marketplace: str = "US"
+    path: Path | None = None
+
+    @property
+    def measured(self) -> bool:
+        return self.status == PROFILE_MEASURED
+
+    @property
+    def exact_weight(self) -> bool:
+        """实测档的实重是量出来的，不再表示「不确定会不会更轻」→ 区间收成单点。"""
+        return self.measured
+
+    @property
+    def label(self) -> str:
+        if self.measured:
+            return f"实测（{self.captured_at}，来源：{self.evidence}）"
+        return "假设（品类推断单品，不得当作该 SKU 的事实）"
+
+    @property
+    def unconfirmed_battery(self) -> tuple[VariantSpec, ...]:
+        """含锂这一列只是推断、没人逐台核对过的机型。"""
+        return tuple(
+            v for c in self.categories for v in c.variants if not v.battery_confirmed
+        )
+
 
 def _require(obj: dict, key: str, where: str):
     if key not in obj:
@@ -304,7 +366,7 @@ def _require(obj: dict, key: str, where: str):
     return obj[key]
 
 
-def _parse_variant(raw: dict, where: str) -> VariantSpec:
+def _parse_variant(raw: dict, where: str, *, status: str) -> VariantSpec:
     dims = _require(raw, "dims_in", where)
     if not isinstance(dims, list) or len(dims) != 3:
         raise InputInvalid(f"{where} 的 dims_in 必须是三个数值（英寸），收到 {dims!r}")
@@ -315,6 +377,26 @@ def _parse_variant(raw: dict, where: str) -> VariantSpec:
             detail="这一列决定用哪套费率表，不能留空也不能用字符串'unknown'——"
             "未知就换一台规格已知的机型，别在这里猜",
         )
+    measured_at = str(raw.get("measured_at", ""))
+    battery_confirmed = raw.get("battery_confirmed", status != PROFILE_MEASURED)
+    if not isinstance(battery_confirmed, bool):
+        raise InputInvalid(
+            f"{where} 的 battery_confirmed 必须是布尔值，收到 {battery_confirmed!r}"
+        )
+    if status == PROFILE_MEASURED:
+        # 实测档要求「什么时候量的」和「含锂有没有核过」都写出来。
+        # 少这两项，一条实测记录就和一条猜测长得一样了。
+        if not measured_at:
+            raise InputInvalid(
+                f"{where} 属于 measured 档，但缺少 measured_at",
+                detail="实测值必须带量测日期，否则无法判断它对应哪一版包装/哪一批货",
+            )
+        if "battery_confirmed" not in raw:
+            raise InputInvalid(
+                f"{where} 属于 measured 档，但缺少 battery_confirmed",
+                detail="含锂决定费率表。没逐台核过就写 false——"
+                "留空会被当成「已确认不含锂」，那是把未知当成通过",
+            )
     return VariantSpec(
         model=str(_require(raw, "model", where)),
         dims_in=tuple(float(v) for v in dims),  # type: ignore[arg-type]
@@ -324,14 +406,19 @@ def _parse_variant(raw: dict, where: str) -> VariantSpec:
         battery_basis=str(raw.get("battery_basis", "未注明")),
         source_url=str(raw.get("source_url", "")),
         source_quote=str(raw.get("source_quote", "")),
+        battery_confirmed=battery_confirmed,
+        measured_at=measured_at,
     )
 
 
-def load_profile(path: Path | str | None = None) -> tuple[CategorySpec, ...]:
+def load_profile(path: Path | str | None = None) -> Profile:
     """读画像文件。坏数据在这里就报，不留到算出结论之后。
 
     查找顺序：显式路径 → `XBORDER_PROFILE_PATH` → 仓库内默认位置。
     留环境变量是因为默认路径按「源码树」推出来，装成包之后那几层目录不一定还在。
+
+    两种口径（`assumed` / `measured`）不能混在一个文件里：文件级 status 决定
+    整份数据能不能被当事实用，行级标记做不到这一点。
     """
     if path is not None:
         target = Path(path)
@@ -342,13 +429,23 @@ def load_profile(path: Path | str | None = None) -> tuple[CategorySpec, ...]:
     if not target.exists():
         raise InputInvalid(
             f"画像文件不存在：{target}",
-            detail="市场典型规格是需要人工维护的数据集，不在包内",
+            detail="市场典型规格与实测记录都是需要人工维护的数据集，不在包内",
         )
     payload = json.loads(target.read_text(encoding="utf-8"))
-    if payload.get("status") != "assumed":
+    status = payload.get("status")
+    if status not in PROFILE_STATUSES:
         raise InputInvalid(
-            f"{target.name} 的 status 必须是 'assumed'，收到 {payload.get('status')!r}",
-            detail="典型规格不是实测值，标成 verified 会让下游把它当事实用",
+            f"{target.name} 的 status 必须是 {' 或 '.join(PROFILE_STATUSES)}，"
+            f"收到 {status!r}",
+            detail="假设不能标成 verified（下游会把它当事实用）；"
+            "实测也不叫 verified——这个文件只是包装规格记录，不是成本参数",
+        )
+    evidence = str(payload.get("evidence", "")).strip()
+    if status == PROFILE_MEASURED and not evidence:
+        raise InputInvalid(
+            f"{target.name} 属于 measured 档，但没有 evidence",
+            detail="必须写明这批数是谁、怎么量出来的（例如「用户口述，无照片留存」）——"
+            "「实测」两个字本身不构成证据",
         )
     raw_categories = payload.get("categories")
     if not isinstance(raw_categories, list) or not raw_categories:
@@ -370,17 +467,24 @@ def load_profile(path: Path | str | None = None) -> tuple[CategorySpec, ...]:
                 key=key,
                 display_name=str(raw.get("display_name", key)),
                 variants=tuple(
-                    _parse_variant(v, f"{where}.variants[{i}]")
+                    _parse_variant(v, f"{where}.variants[{i}]", status=status)
                     for i, v in enumerate(raw_variants)
                 ),
                 short_name=str(raw.get("short_name", "")),
             )
         )
-    return tuple(categories)
+    return Profile(
+        status=status,
+        captured_at=str(payload.get("captured_at", "")),
+        evidence=evidence,
+        categories=tuple(categories),
+        marketplace=str(payload.get("marketplace", "US")),
+        path=target,
+    )
 
 
 def load_reports(path: Path | str | None = None) -> tuple[CategoryReport, ...]:
-    return tuple(build_category(spec) for spec in load_profile(path))
+    return tuple(build_category(spec) for spec in load_profile(path).categories)
 
 
 def find_category(reports, key: str) -> CategoryReport:

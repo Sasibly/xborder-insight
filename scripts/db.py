@@ -208,6 +208,14 @@ def _pad(text: str, width: int) -> str:
     return clipped + " " * max(0, width - _disp_width(clipped))
 
 
+def _fmt_fee(env, tiers: str = "") -> str:
+    """费用一格。区间收成单点时不打两个数——那不是「更精确」，是实重已经量过了。"""
+    suffix = f"（{tiers}）" if tiers else ""
+    if env.spread_usd < 0.005:
+        return f"${env.high_usd:.2f}{suffix}"
+    return f"${env.low_usd:.2f}–${env.high_usd:.2f}{suffix}"
+
+
 def _dump_profile(conn, args) -> int:
     """按市场典型规格跑一遍：这些品类到底报不报得出价。
 
@@ -215,7 +223,8 @@ def _dump_profile(conn, args) -> int:
     进不了就是「费率未录」，而不是一个偏低的数。
     """
     try:
-        reports = profiles.load_reports(args.profile)
+        profile = profiles.load_profile(args.profile)
+        reports = tuple(profiles.build_category(spec) for spec in profile.categories)
         if args.category:
             reports = (profiles.find_category(reports, args.category),)
     except AppError as exc:
@@ -225,9 +234,14 @@ def _dump_profile(conn, args) -> int:
         return 1
 
     ship_date = args.ship_date or date.today()
-    print(f"市场典型规格 → FBA 可报价性　市场={args.market}")
+    title = "实测包装 → FBA 可报价性" if profile.measured else "市场典型规格 → FBA 可报价性"
+    print(f"{title}　市场={args.market}")
     print(f"  售价 ${args.price:.2f}　发货日 {ship_date.isoformat()}")
-    print("  规格来源：在售机型的公开包装尺寸与毛重，状态 assumed（非实测）")
+    print(f"  数据口径：{profile.label}")
+    if profile.measured:
+        print(
+            "  尺寸与重量取自实测；含锂未逐台核 BOM 的机型会同时给出两种费率表的结果"
+        )
     print("=" * 104)
     print(
         _pad("品类", 14) + _pad("机型", 34) + _pad("含锂", 6)
@@ -249,9 +263,33 @@ def _dump_profile(conn, args) -> int:
                     variant.as_facts(),
                     selling_price=args.price,
                     ship_date=ship_date,
+                    exact_weight=profile.exact_weight,
                 )
                 tiers = "/".join(SIZE_TIER_LABELS.get(t, t) for t in klass.size_tiers)
-                fee = f"${env.low_usd:.2f}–${env.high_usd:.2f}（{tiers}）"
+                fee = _fmt_fee(env, tiers)
+                if not variant.spec.battery_confirmed:
+                    # 含锂没逐台核过：另一套费率表的结果一起给出来。
+                    # 只报「按品类推的那一边」，等于把未知当成通过——
+                    # 而错到便宜那一侧时，输出上一点异常都看不出来。
+                    flip = PackageFacts(
+                        not variant.spec.has_lithium_battery,
+                        variant.spec.weight_oz,
+                        variant.spec.dims_in,
+                    )
+                    _, env_flip = fba_db.envelope_for_package(
+                        conn,
+                        args.market,
+                        flip,
+                        selling_price=args.price,
+                        ship_date=ship_date,
+                        exact_weight=profile.exact_weight,
+                    )
+                    here = "含锂" if variant.spec.has_lithium_battery else "普货"
+                    there = "普货" if variant.spec.has_lithium_battery else "含锂"
+                    fee = (
+                        f"{_fmt_fee(env, '')} {here} / "
+                        f"{_fmt_fee(env_flip, '')} {there}（{tiers}）"
+                    )
                 billable = max(variant.spec.weight_oz, klass.dim_weight_oz or 0.0)
             except AppError as exc:
                 unreachable += 1
@@ -276,13 +314,25 @@ def _dump_profile(conn, args) -> int:
         print(f"    判定：{report.verdict_label}")
         for variant in report.variants:
             print(f"      · {variant.spec.model}：{variant.worst_edge.describe()}")
-            print(f"        来源 {variant.spec.source_url}")
+            if variant.spec.source_url:
+                print(f"        来源 {variant.spec.source_url}")
+            elif variant.spec.measured_at:
+                print(
+                    f"        实测 {variant.spec.measured_at}　"
+                    f"{variant.spec.weight_source}"
+                )
         if report.battery_divergent:
             print(
                 "    含锂判定分歧：同品类既有无电池款又有含锂款 → "
                 "费率表不同，不能按品类统一填"
             )
-        print(f"    下一步：{report.headline()}")
+        if profile.measured:
+            print(
+                "    下一步：可直接按上表报价（尺寸与重量已实测）。"
+                "含锂未确认的机型两套结果都已列出，取保守侧"
+            )
+        else:
+            print(f"    下一步：{report.headline()}")
         print()
 
     if unreachable:
@@ -295,10 +345,29 @@ def _dump_profile(conn, args) -> int:
             "仍报缺的是超大件与 2027 期（docs/07 H14），这部分不是「费用高一点」，"
             "而是根本给不出报价。"
         )
-    print(
-        "\n这些结论依赖 assumed 规格，不能当作该 SKU 的事实。"
-        "\n要变成可决策的数，按 docs/07 H2 B 级量一次箱子：长×宽×高（英寸）+ 实重（oz）。"
-    )
+    shown = [v for r in reports for v in r.variants]
+    unconfirmed = [v.spec.model for v in shown if not v.spec.battery_confirmed]
+    if profile.measured:
+        if unconfirmed:
+            print(
+                f"\n含锂未逐台核 BOM 的机型 {len(unconfirmed)} 台："
+                + "、".join(unconfirmed)
+            )
+            print(
+                "  上面每行给了两套费率表的结果，主值取保守侧。"
+                "看一眼实物/BOM 就能收敛到一个数（docs/07 H2-c）。"
+            )
+        print(
+            "  仍需你给：真实售价（现按 "
+            f"${args.price:.2f} 算）、采购价、头程报价（docs/07 H3、H15）。"
+        )
+        print("  数据来源与口径见文件头的 evidence 字段，以及 docs/04 §12.8。")
+    else:
+        print(
+            "\n这些结论依赖 assumed 规格，不能当作该 SKU 的事实。"
+            "\n要变成可决策的数，按 docs/07 H2 B 级量一次箱子：长×宽×高（英寸）+ 实重（oz）。"
+            "\n实测值请写进 data/profiles/measured_skus.json（status=measured），不要覆盖本文件。"
+        )
     return 0
 
 

@@ -64,12 +64,10 @@ def test_missing_file_is_reported_not_silently_empty(tmp_path: Path):
     assert "不存在" in exc.value.message
 
 
-def _write(tmp_path: Path, categories) -> Path:
+def _write(tmp_path: Path, categories, *, status: str = "assumed", **extra) -> Path:
+    payload = {"status": status, "categories": categories, **extra}
     target = tmp_path / "profile.json"
-    target.write_text(
-        json.dumps({"status": "assumed", "categories": categories}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return target
 
 
@@ -175,7 +173,7 @@ def test_size_verdict_agrees_with_package_layer(dims):
 def _report(tmp_path: Path, variants) -> prof.CategoryReport:
     spec = prof.load_profile(
         _write(tmp_path, [{"key": "k", "display_name": "k", "variants": variants}])
-    )[0]
+    ).categories[0]
     return prof.build_category(spec)
 
 
@@ -261,3 +259,205 @@ def test_billable_weight_takes_the_larger_of_unit_and_dim_weight(tmp_path: Path)
     assert variant.dim_weight_oz == pytest.approx(pkg.dimensional_weight_oz((18, 14, 8)))
     assert variant.billable_oz == pytest.approx(variant.dim_weight_oz)
     assert variant.billable_oz > 200  # 14.5 lb ≈ 232 oz
+
+
+# ---------------------------------------------------------------- 实测档（measured）
+
+
+def test_measured_profile_requires_evidence(tmp_path: Path):
+    """「实测」两个字本身不构成证据：必须写清谁、怎么量的。
+
+    没有这一栏，一条实测记录和一条猜测在文件里长得完全一样，
+    而下游只会看见 status=measured 就当成事实用。
+    """
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(measured_at="2026-11-21", battery_confirmed=False)]}],
+        status="measured",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "evidence" in exc.value.message
+
+
+def test_measured_variant_requires_measured_at(tmp_path: Path):
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(battery_confirmed=False)]}],
+        status="measured",
+        evidence="用户口述",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "measured_at" in exc.value.message
+
+
+def test_measured_variant_must_state_battery_confirmed_explicitly(tmp_path: Path):
+    """留空会被当成「已确认不含锂」——那是把未知当成通过，必须拒绝。"""
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(measured_at="2026-11-21")]}],
+        status="measured",
+        evidence="用户口述",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "battery_confirmed" in exc.value.message
+
+
+def test_assumed_profile_leaves_battery_confirmed_true(tmp_path: Path):
+    """假设档不需要这个标记：它本来就没打算当事实，否则每行都要多一列噪音。"""
+    profile = prof.load_profile(_write(tmp_path, [{"key": "k", "variants": [_variant()]}]))
+    assert profile.status == prof.PROFILE_ASSUMED
+    assert profile.categories[0].variants[0].battery_confirmed is True
+    assert profile.exact_weight is False
+
+
+def test_measured_profile_collapses_to_single_point(tmp_path: Path):
+    """实测档的实重是量出来的，不再表示「不确定会不会更轻」→ 不再从 1 lb 起算。"""
+    profile = prof.load_profile(
+        _write(
+            tmp_path,
+            [{"key": "k", "variants": [_variant(
+                measured_at="2026-11-21", battery_confirmed=False,
+            )]}],
+            status="measured",
+            evidence="用户口述",
+        )
+    )
+    assert profile.measured is True
+    assert profile.exact_weight is True
+    assert [v.model for v in profile.unconfirmed_battery] == ["x"]
+    assert "实测" in profile.label
+
+
+def test_repo_measured_profile_matches_what_was_measured():
+    """仓库里那份实测画像必须与 11-21 收到的四台一致，且口径是「包装后」。
+
+    机器人按保守侧取含锂：同品类两台在售机型都是 2600 mAh Li-ion，
+    带基站机型不存在无电池款。取 false 会把每件成本少算 $1.28。
+    """
+    profile = prof.load_profile(prof.MEASURED_PROFILE_PATH)
+    assert profile.measured
+    assert [c.key for c in profile.categories] == [
+        "air_purifier",
+        "coffee_machine",
+        "electric_kettle",
+        "robot_vacuum",
+    ]
+    dims = {
+        c.key: c.variants[0].dims_in for c in profile.categories
+    }
+    assert dims["air_purifier"] == (24.0, 15.0, 15.0)
+    assert dims["coffee_machine"] == (16.0, 13.0, 9.5)
+    assert dims["electric_kettle"] == (10.5, 9.2, 8.4)
+    assert dims["robot_vacuum"] == (22.0, 18.0, 14.0)
+
+    vacuum = next(c for c in profile.categories if c.key == "robot_vacuum")
+    assert vacuum.variants[0].has_lithium_battery is True
+    # 全部机型都还没核过 BOM，一台都不许标成已确认
+    assert len(profile.unconfirmed_battery) == 4
+
+    reports = prof.load_reports(prof.MEASURED_PROFILE_PATH)
+    assert all(r.bulky_quotable for r in reports), "四台都应收敛到小号大件，不该报缺"
+
+
+# ---------------------------------------------------------------- 实测档（measured）
+
+
+def test_measured_profile_requires_evidence(tmp_path: Path):
+    """「实测」两个字本身不构成证据：必须写清谁、怎么量的。
+
+    没有这一栏，一条实测记录和一条猜测在文件里长得完全一样，
+    而下游只会看见 status=measured 就当成事实用。
+    """
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(measured_at="2026-11-21", battery_confirmed=False)]}],
+        status="measured",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "evidence" in exc.value.message
+
+
+def test_measured_variant_requires_measured_at(tmp_path: Path):
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(battery_confirmed=False)]}],
+        status="measured",
+        evidence="用户口述",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "measured_at" in exc.value.message
+
+
+def test_measured_variant_must_state_battery_confirmed_explicitly(tmp_path: Path):
+    """留空会被当成「已确认不含锂」——那是把未知当成通过，必须拒绝。"""
+    target = _write(
+        tmp_path,
+        [{"key": "k", "variants": [_variant(measured_at="2026-11-21")]}],
+        status="measured",
+        evidence="用户口述",
+    )
+    with pytest.raises(InputInvalid) as exc:
+        prof.load_profile(target)
+    assert "battery_confirmed" in exc.value.message
+
+
+def test_assumed_profile_leaves_battery_confirmed_true(tmp_path: Path):
+    """假设档不需要这个标记：它本来就没打算当事实，否则每行都要多一列噪音。"""
+    profile = prof.load_profile(_write(tmp_path, [{"key": "k", "variants": [_variant()]}]))
+    assert profile.status == prof.PROFILE_ASSUMED
+    assert profile.categories[0].variants[0].battery_confirmed is True
+    assert profile.exact_weight is False
+
+
+def test_measured_profile_collapses_to_single_point(tmp_path: Path):
+    """实测档的实重是量出来的，不再表示「不确定会不会更轻」→ 不再从 1 lb 起算。"""
+    profile = prof.load_profile(
+        _write(
+            tmp_path,
+            [{"key": "k", "variants": [_variant(
+                measured_at="2026-11-21", battery_confirmed=False,
+            )]}],
+            status="measured",
+            evidence="用户口述",
+        )
+    )
+    assert profile.measured is True
+    assert profile.exact_weight is True
+    assert [v.model for v in profile.unconfirmed_battery] == ["x"]
+    assert "实测" in profile.label
+
+
+def test_repo_measured_profile_matches_what_was_measured():
+    """仓库里那份实测画像必须与 11-21 收到的四台一致，且口径是「包装后」。
+
+    机器人按保守侧取含锂：同品类两台在售机型都是 2600 mAh Li-ion，
+    带基站机型不存在无电池款。取 false 会把每件成本少算 $1.28。
+    """
+    profile = prof.load_profile(prof.MEASURED_PROFILE_PATH)
+    assert profile.measured
+    assert [c.key for c in profile.categories] == [
+        "air_purifier",
+        "coffee_machine",
+        "electric_kettle",
+        "robot_vacuum",
+    ]
+    dims = {
+        c.key: c.variants[0].dims_in for c in profile.categories
+    }
+    assert dims["air_purifier"] == (24.0, 15.0, 15.0)
+    assert dims["coffee_machine"] == (16.0, 13.0, 9.5)
+    assert dims["electric_kettle"] == (10.5, 9.2, 8.4)
+    assert dims["robot_vacuum"] == (22.0, 18.0, 14.0)
+
+    vacuum = next(c for c in profile.categories if c.key == "robot_vacuum")
+    assert vacuum.variants[0].has_lithium_battery is True
+    # 全部机型都还没核过 BOM，一台都不许标成已确认
+    assert len(profile.unconfirmed_battery) == 4
+
+    reports = prof.load_reports(prof.MEASURED_PROFILE_PATH)
+    assert all(r.bulky_quotable for r in reports), "四台都应收敛到小号大件，不该报缺"
