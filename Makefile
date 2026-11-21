@@ -22,7 +22,7 @@ DAYS ?= 30
 YES ?=
 
 .DEFAULT_GOAL := check
-.PHONY: check test db db-up db-status db-params eval baseline show serve demo jobs jobs-drain jobs-recover jobs-archive key-create keys key-revoke smoke smoke-docker docker-build rollback backup calibrate
+.PHONY: check test db db-up db-status db-params db-fba eval baseline show serve demo jobs jobs-drain jobs-recover jobs-archive key-create keys key-revoke smoke smoke-docker docker-build rollback backup calibrate
 
 ## check: 全量门禁 = 测试 + 迁移可逆性 + 评测 + 基线退化比对
 check:
@@ -47,6 +47,10 @@ db-status:
 ## db-params: 参数核实进度（当前应全部为待核实）
 db-params:
 >$(PY) scripts/db.py params
+
+## db-fba: FBA 维表覆盖率与缺口（缺口是结论，不是缺陷）
+db-fba:
+>$(PY) scripts/db.py fba
 
 ## eval: 只跑评测并比对基线（F1 掉超 2 个点即非零退出）
 eval:

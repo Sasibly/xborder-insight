@@ -16,7 +16,9 @@ from xborder_insight.db import migrate
 from xborder_insight.db.connection import schema_fingerprint, table_names, transaction
 from xborder_insight.db.migrations import LATEST, ordered
 
-BUSINESS_TABLES = {"reviews", "runs", "cost_params", "compliance_rules"}
+BUSINESS_TABLES = {
+    "reviews", "runs", "cost_params", "compliance_rules", "fba_fee_schedule"
+}
 
 
 # ---------- 注册表本身的完整性 ----------

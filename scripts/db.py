@@ -7,6 +7,7 @@
     python scripts/db.py down --to 0 --yes   # 全部回滚（破坏性，必须 --yes）
     python scripts/db.py roundtrip           # 在临时库验证 up→down→up，不动真库
     python scripts/db.py params              # 参数核实进度
+    python scripts/db.py fba                 # FBA 费率维表覆盖率与缺口
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -22,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from xborder_insight.db import fba as fba_db  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
@@ -64,6 +66,43 @@ def _dump_params(conn) -> int:
     return 0
 
 
+def _fmt_oz(value: float | None) -> str:
+    return "∞" if value is None else f"{value:g}"
+
+
+def _dump_fba(conn, marketplace: str) -> int:
+    audit = fba_db.audit(conn, marketplace)
+    print(f"FBA 配送费维表  市场={marketplace}")
+    print("-" * 58)
+    print(
+        f"  共 {audit.total_rows} 行 · 已核实 {audit.verified_rows} · "
+        f"待核实 {audit.draft_rows}"
+    )
+    print(
+        f"  已声明角度组合 {audit.banded_dimensions} 个 · "
+        f"重量缺口 {audit.gap_count} 处 · 区间重叠 {audit.overlap_count} 处"
+    )
+    for group in audit.groups:
+        gap_text = (
+            "无缺口"
+            if not group.gaps
+            else "缺口 " + "、".join(f"{_fmt_oz(lo)}–{_fmt_oz(hi)}" for lo, hi in group.gaps)
+        )
+        overlap_text = (
+            "" if not group.overlaps
+            else f"  ⚠ 重叠 {len(group.overlaps)} 处"
+        )
+        print(f"\n  · {group.key}  （{len(group.bands)} 档 / {gap_text}{overlap_text}）")
+        for lo, hi in group.bands:
+            print(f"      {_fmt_oz(lo):>5} – {_fmt_oz(hi):<5} oz")
+    print(
+        "\n注：这张表只登记了 large_standard / 非旺季 / 非服饰 / 未含燃油附加费的口径。"
+    )
+    print("    未核实行无法用于报价：resolve() 会抛 param_unverified（503），")
+    print("    查询缺口不会外推到相邻尺寸段或相邻重量档。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -82,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="查看版本")
     sub.add_parser("roundtrip", help="在临时库验证可逆性")
     sub.add_parser("params", help="参数核实进度")
+    fba_parser = sub.add_parser("fba", help="FBA 费率维表覆盖率与缺口")
+    fba_parser.add_argument("--market", default="US")
 
     reset = sub.add_parser("reset", help="回滚到 0 再升级（清空数据）")
     reset.add_argument("--yes", action="store_true")
@@ -116,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
             return _dump_status(conn)
         if args.command == "params":
             return _dump_params(conn)
+        if args.command == "fba":
+            return _dump_fba(conn, args.market)
         if args.command == "up":
             applied = migrate.upgrade(conn, args.target if args.target is not None else migrate.LATEST)
             print(f"已应用 {len(applied)} 个迁移：{applied or '无需变更'}")
