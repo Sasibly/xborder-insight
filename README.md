@@ -734,6 +734,10 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 
 ## 下一步
 
+> 需要我本人参与的事项（后台数据、产品物理参数、标注复核）统一记在
+> [`docs/07-需人工介入清单.md`](docs/07-需人工介入清单.md)，按 `H1…H11` 编号，
+> 每项写明具体动作、产出格式与不做的后果。下面这些是我能独立完成的。
+
 1. **补齐成本参数**：佣金率需先确认类目归属（Electronics Accessories 15% vs Consumer Electronics 8%，差 7 个点）；关税需确认全部 Chapter 99 附加税号。~~FBA 费需建维表~~ **结构已落地（11-21，m0009）**——`fba_fee_schedule` + 纯函数查表 + 缺口审计，但数据只进了 4 档锚点、全 draft，`make db-fba` 直接列出缺哪几段。查证记录见 `docs/04-成本参数口径.md`
 2. **核实合规规则**（部分完成）：FCC 授权路径已核实为 Part 18 + SDoC 并置 `verified`；
    FCC ID 标注因「是否含独立发射机」属产品事实而保持 draft；安全检测与 Qi 认证待查。
