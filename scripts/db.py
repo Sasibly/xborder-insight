@@ -13,6 +13,8 @@
     python scripts/db.py fba-export          # 导出 402 格逐格复核表（只读库）
     python scripts/db.py fba-review --in data/review/fba_rates_2026-11-21.csv
                                              # 回收复核结论并对账（只读库）
+    python scripts/db.py screen --price 63.99 --cogs 18.50 --duty 0.237 --fba 14.40
+                                             # 候选准入：这道品在 15% 线下还剩多少空间
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -35,6 +37,7 @@ from xborder_insight.db import fba_review  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
 from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
+from xborder_insight.domain import admission  # noqa: E402
 from xborder_insight.domain import profiles  # noqa: E402
 from xborder_insight.domain import transport  # noqa: E402
 from xborder_insight.domain import package as pkg  # noqa: E402
@@ -592,6 +595,92 @@ def _dump_transport(args) -> int:
     return 0
 
 
+def _dump_screen(args) -> int:
+    """候选准入。不碰数据库：缺口与目标价都是纯计算。
+
+    两道闸刻意都打印：闸一是粗筛（只看售价带），闸二是真算。
+    两者结论相反时以闸二为准，并在下面用 `!` 标出来——否则读的人会挑爱听的那个。
+    """
+    candidate = admission.Candidate(
+        name=args.name,
+        selling_price=args.price,
+        quoted_cost=args.cogs,
+        duty_rate=args.duty,
+        fba_fee=args.fba,
+        fba_ratio=args.fba_ratio,
+        inbound_freight=args.freight,
+        referral_rate=args.referral,
+        return_rate=args.returns,
+        incoterm=args.incoterm,
+    )
+    try:
+        result = admission.evaluate(candidate)
+    except admission.AdmissionInputInvalid as exc:
+        print(f"[输入不成立] {exc}")
+        return 2
+
+    def money(value, dash="—"):
+        return dash if value is None else f"${value:,.2f}"
+
+    duty = "未给" if args.duty is None else f"{args.duty:.1%}"
+    fba = money(args.fba, "未给")
+    print("候选准入（闸一 → 闸二）")
+    print("-" * 62)
+    print(f"  候选：{result.name}")
+    print(
+        f"  售价 {money(args.price)}　采购 {money(args.cogs)}　关税 {duty}"
+        f"　FBA {fba}　头程 ${args.freight:.2f}"
+    )
+
+    if result.gate is not None:
+        gate = result.gate
+        head = f"  闸一：{gate.label}"
+        if gate.limit is not None:
+            head += f"　上限 ${gate.limit:,.2f}"
+        print(head)
+        print(f"    {gate.reason}")
+
+    if result.verdict == admission.VERDICT_NEED_INFO:
+        print("  闸二：还判不了")
+        for item in result.missing:
+            print(f"    · 缺 {item}")
+        print("  补法：`docs/07` 里各项写着去哪儿取数；不会用默认值替你猜。")
+        for note in result.notes:
+            print(f"  ! {note}")
+        return 3
+
+    print(f"  闸二：{result.label}　毛利 {result.gross_margin:.2%}")
+    if result.verdict == admission.VERDICT_FAIL:
+        print(f"    {result.reason}")
+        print(f"    采购必须 ≤ {money(result.max_cogs)}（现 {money(args.cogs)}）")
+        print(f"    售价必须 ≥ {money(result.min_price)}（现 {money(args.price)}）")
+        print(
+            f"    超预算 {result.overrun_pts:.2f} 个点 —— 与毛利缺口是同一个数"
+            "（`docs/04` §18.2）"
+        )
+    else:
+        room = None
+        if result.max_cogs is not None and args.cogs:
+            room = result.max_cogs - args.cogs
+        print(f"    毛利额 ${result.gross_profit:,.2f}/件")
+        if room is not None:
+            print(f"    采购价还有 {money(room)} 的空间才到 15% 线")
+        print(f"    15% 线所需售价 {money(result.min_price)}")
+    for note in result.notes:
+        print(f"  ! {note}")
+
+    print()
+    print(
+        f"  口径：佣金 {args.referral:.0%} / 退货率 {args.returns:.0%} / "
+        f"头程 ${args.freight:.2f}——三项未全部核实（H1 / H3 / H15）。"
+    )
+    print("  对外引用这个结论时，必须连这三个前提一起写。")
+
+    if result.verdict == admission.VERDICT_PASS:
+        return 0
+    return 1
+
+
 def _export_path(args) -> Path:
     if args.out:
         return Path(args.out)
@@ -761,6 +850,28 @@ def main(argv: list[str] | None = None) -> int:
              "standalone=纯电池(PI965)。含锂但不给这一项 → 结论为「需先确认电池形态」",
     )
 
+    scr_parser = sub.add_parser(
+        "screen",
+        help="候选准入：这个品在 15% 毛利线下还剩多少空间（闸一 + 闸二）",
+    )
+    scr_parser.add_argument("--name", default="candidate", help="候选名（输出用）")
+    scr_parser.add_argument("--price", type=float, required=True, help="售价（美元）")
+    scr_parser.add_argument("--cogs", type=float, default=None,
+                            help="采购价（按 --incoterm 口径；默认 FOB）")
+    scr_parser.add_argument("--duty", type=float, default=None,
+                            help="关税率（0–1）。不给则判 need_info——不替你猜归类")
+    scr_parser.add_argument("--fba", type=float, default=None, help="FBA 费（$/件）")
+    scr_parser.add_argument("--fba-ratio", type=float, default=None,
+                            help="FBA 占售价的典型比例（如 0.15）。与 --fba 二选一")
+    scr_parser.add_argument("--freight", type=float, default=admission.DEFAULT_FREIGHT,
+                            help="头程（$/件），默认 6.00")
+    scr_parser.add_argument("--referral", type=float, default=admission.DEFAULT_REFERRAL,
+                            help="佣金比例，默认 0.15（H1 未核实前用这个口径）")
+    scr_parser.add_argument("--returns", type=float, default=admission.DEFAULT_RETURNS,
+                            help="退货率，默认 0.08（H3 未核实前用这个口径）")
+    scr_parser.add_argument("--incoterm", default="FOB",
+                            choices=("FOB", "DDP"), help="默认 FOB")
+
     prof_parser = sub.add_parser(
         "fba-profile",
         help="按市场典型规格跑一遍：这些品类到底报不报得出价",
@@ -815,6 +926,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "transport":
         # 不碰数据库：这是纯规则判定，没有需要核实的数值参与。
         return _dump_transport(args)
+
+    if args.command == "screen":
+        # 同样不碰库：准入只用到传入的四个数与几个口径常数。
+        return _dump_screen(args)
 
     if args.db:
         target = args.db

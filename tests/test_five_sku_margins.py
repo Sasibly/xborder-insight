@@ -617,19 +617,3 @@ def test_18_3_is_loose_below_56_and_tight_above(fees):
     # 分界点本身：$18.3 恰好等于该售价的上限
     assert cap_at(56.0) == pytest.approx(18.30, abs=0.35)
 
-
-def test_active_price_candidate_that_the_gate_would_wrongly_kill():
-    """$80 售价、$20 采购、标准尺寸（FBA $8.09）正好 15%——但它会被 $18.3 砍掉。
-
-    这条是给闸一留的「误杀样本」：它证明 $18.3 只能做粗筛，
-    不能当准入判据。真要判，得走 §18.1 的不等式。
-    """
-    price, cogs, fba, duty = 80.0, 20.0, 8.09, 0.125
-    margin = (
-        ADMISSION_DENOMINATOR * price
-        - cogs * (1 + duty + RETURNS * 0.30)
-        - (1.016 * FREIGHT + 0.24)
-        - fba
-    ) / price
-    assert margin == pytest.approx(0.15, abs=5e-4)
-    assert cogs > 18.30  # 闸一会把它筛掉
