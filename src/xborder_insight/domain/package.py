@@ -675,6 +675,22 @@ SPEC_CONTRADICTION_WEIGHT = "contradiction_weight"
 SPEC_CONTRADICTION_SAME_BOX = "contradiction_same_box"
 SPEC_INDISTINGUISHABLE = "indistinguishable"
 
+#: 两组数在两位小数上完全一致。这不是「两种口径对上了」，是**同一份数据的第二次出现**。
+#
+# 加这一档是因为一个反复出现的坑：让「拿卷尺量一次」时，量回来的数与供应商规格书
+# 一字不差（连 13.78 / 17.52 这种两位小数都一样，只是三边顺序换了）。卷尺与电子秤
+# 不会给出规格书那种数——实测通常是 17 1/2 英寸、9.3 磅。逐位相同说明这次「实测」
+# 没有发生，或者量的是同一份规格书。
+#
+# 为什么不能当「已核实」放过去：它会安静地把一台亏 7.64% 的 SKU 变成赚 7.96%
+# （净化器 $12.48/件），而所有下游结论都会跟着改，中间不报任何错。
+SPEC_SAME_VALUES = "same_values"
+
+
+def _same_reported(left: float, right: float, digits: int = 2) -> bool:
+    """按「报告精度」比较两个数。规格书与实测都是用两位小数沟通的。"""
+    return round(float(left), digits) == round(float(right), digits)
+
 
 @dataclass(frozen=True)
 class SpecReading:
@@ -711,6 +727,25 @@ def compare_packaging(first: SpecReading, second: SpecReading) -> SpecRelation:
                 f"读数 {reading.label!r} 的三边与重量必须为正，收到 "
                 f"{reading.dims_in!r} / {reading.weight_lb!r}"
             )
+
+    # 先判「同一份数据」。三边按排序比，因为口头转述时顺序会换：
+    # 「17.52×13.78×7.48」与「13.78×7.48×17.52」是同一个盒子。
+    same_edges = all(
+        _same_reported(a, b)
+        for a, b in zip(sorted(first.dims_in), sorted(second.dims_in))
+    )
+    if same_edges and _same_reported(first.weight_lb, second.weight_lb):
+        return SpecRelation(
+            verdict=SPEC_SAME_VALUES,
+            reason=(
+                "三边（含顺序变化）与重量在两位小数上完全一致。卷尺与电子秤不会量出"
+                "规格书那种数——逐位相同说明这是同一份数据的第二次出现，不是两次独立读数"
+            ),
+            box=None,
+            unit=None,
+            volume_ratio=1.0,
+            weight_delta_lb=0.0,
+        )
 
     small, large = sorted((first, second), key=lambda r: r.volume_in3)
     volume_ratio = small.volume_in3 / large.volume_in3

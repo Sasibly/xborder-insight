@@ -105,3 +105,55 @@ def test_zero_or_negative_reading_is_rejected():
     """0 不能被当成「没数据」混过去：体积 0 会让体积重变 0，费用掉到最轻档。"""
     with pytest.raises(Exception):
         pkg.compare_packaging(_r("A", (0.0, 10.0, 10.0), 5.0), _r("B", (9.0, 9.0, 9.0), 4.0))
+
+
+def test_reordered_but_identical_numbers_are_the_same_data_not_a_new_measurement():
+    """11-23 13:42 用户报的「实测」：17.52×13.78×7.48 / 9.26 lb。
+
+    与供应商规格书（13.78×7.48×17.52 / 9.26 lb）逐位相同，只是三边顺序换了。
+    卷尺量不出 13.78 与 17.52 这种两位小数、电子秤也称不出 9.26 这种第二位——
+    逐位相同只能说明这次「实测」是同一份数据的第二次出现。
+
+    这一档必须单独存在：若判成 box_vs_unit（「B 是裸机」），读者会以为已经查清；
+    若判成矛盾，读者会去改数。它真正要说的是「这次没有产生新信息」。
+    """
+    relation = pkg.compare_packaging(
+        _r("实测", (17.52, 13.78, 7.48), 9.26),
+        _r("规格书", (13.78, 7.48, 17.52), 9.26),
+    )
+    assert relation.verdict == pkg.SPEC_SAME_VALUES
+    assert relation.box is None and relation.unit is None
+    assert "同一份数据" in relation.reason
+
+
+def test_same_values_is_detected_for_the_kettle_too():
+    """水壶同样逐位相同（6.69×6.69×3.74 / 3.09 lb）——两台都中，不是巧合。"""
+    relation = pkg.compare_packaging(
+        _r("实测", (6.69, 6.69, 3.74), 3.09),
+        _r("规格书", (6.69, 6.69, 3.74), 3.09),
+    )
+    assert relation.verdict == pkg.SPEC_SAME_VALUES
+
+
+def test_third_decimal_breaks_the_same_values_verdict():
+    """差 0.01 lb 就不算逐位相同——判据按两位小数卡死，否则「差不多」会把真读数也吞掉。
+
+    这一对落在 box_vs_unit（箱 20³ / 20 lb，机 19.8³ / 12 lb），说明同源判定
+    不会顺手把正常的一对也判成「同一份数据」。
+    """
+    relation = pkg.compare_packaging(
+        _r("A", (20.0, 20.0, 20.0), 20.00),
+        _r("B", (19.8, 19.8, 19.8), 12.00),
+    )
+    assert relation.verdict == pkg.SPEC_BOX_VS_UNIT
+
+
+def test_usable_as_box_rejects_same_source_data():
+    """同一份数据不能当「已量过」。判不出箱就返回 None，调用方必须去要新读数。"""
+    assert (
+        pkg.usable_as_box(
+            _r("实测", (17.52, 13.78, 7.48), 9.26),
+            _r("规格书", (13.78, 7.48, 17.52), 9.26),
+        )
+        is None
+    )
