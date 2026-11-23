@@ -393,12 +393,38 @@ def run_checks(
         f"HTTP {response.status_code} headers={dict(response.headers)}",
     )
 
+    # 03b 指标端点：未鉴权必须 401（页面上有租户名与额度，
+    # 免密等于给了一个绕过「跨租户一律 404」的侧信道）
+    response = client.get("/metrics")
+    check.expect(
+        response.status_code == 401,
+        "无密钥访问 /metrics → 401",
+        "",
+        f"HTTP {response.status_code} {response.text[:120]}",
+    )
+
     # 04 建两把 key：主租户 + 旁观租户（用于验证越权 404）
     key_a = create_key("smoke-a")
     key_b = create_key("smoke-b")
     if not key_a:
         check.fail("创建租户密钥", "拿不到主租户密钥，后续断言无法进行")
         return
+
+    # 04b 指标可抓：格式与关键指标族都要在场。
+    # 只断言「200」不够——Content-Type 不对时 Prometheus 会整页丢弃，
+    # 服务端看起来一切正常，看板上却没有数据。
+    response = client.get("/metrics", headers={"Authorization": f"Bearer {key_a}"})
+    body = response.text
+    check.expect(
+        response.status_code == 200
+        and response.headers.get("content-type", "").startswith("text/plain")
+        and "version=0.0.4" in response.headers.get("content-type", "")
+        and "xbi_jobs_total" in body
+        and "xbi_quota_tokens_used" in body,
+        "/metrics 返回 Prometheus 文本且关键指标族在场",
+        f"{len(body)} 字节",
+        f"HTTP {response.status_code} type={response.headers.get('content-type')} body={body[:120]}",
+    )
     auth_a = {"Authorization": f"Bearer {key_a}"}
     auth_b = {"Authorization": f"Bearer {key_b}"} if key_b else None
     check.ok("创建租户密钥", "tenant=smoke-a" + (" / smoke-b" if key_b else "（无旁观密钥）"))

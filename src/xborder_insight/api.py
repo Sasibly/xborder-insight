@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import __version__, dashboard
+from . import __version__, dashboard, metrics
 from .config import ROOT_DIR, settings
 from .db.connection import connect
 from .db import migrate
@@ -116,6 +116,37 @@ def current_principal(request: Request) -> Principal:
     with open_db() as conn:
         row = api_keys.authenticate(conn, raw)
         quota_mod.hit(conn, str(row["tenant_id"]), int(row["rpm_limit"]))
+    return Principal(
+        tenant_id=str(row["tenant_id"]),
+        daily_token_quota=row["daily_token_quota"],
+        rpm_limit=int(row["rpm_limit"]),
+        key_prefix=str(row["key_prefix"]),
+        authenticated=True,
+    )
+
+
+def _metrics_principal(request: Request) -> Principal:
+    """`/metrics` 的鉴权：认人，但不计限流。
+
+    不能复用 `current_principal`：它每调一次就 `quota.hit()` 记一个限流窗口。
+    Prometheus 默认 15 秒抓一次，一分钟四次抓取就会吃掉 rpm 配额，抓取开始
+    被 429——「监控挂了」和「服务挂了」同时发生，而且恰好是在最需要指标的时候。
+
+    鉴权本身不能省：指标里有租户名与额度，免密暴露等于给了一个绕过
+    「跨租户一律 404」的侧信道。
+    """
+    if not settings.auth_required:
+        return Principal(
+            tenant_id="local",
+            daily_token_quota=None,
+            rpm_limit=None,
+            key_prefix=None,
+            authenticated=False,
+        )
+
+    raw = _api_key_from(request)
+    with open_db() as conn:
+        row = api_keys.authenticate(conn, raw)
     return Principal(
         tenant_id=str(row["tenant_id"]),
         daily_token_quota=row["daily_token_quota"],
@@ -300,6 +331,28 @@ async def ready() -> dict[str, str]:
         "cluster_threshold": f"{settings.cluster_threshold:g}",
         "cluster_threshold_source": settings.cluster_threshold_source,
     }
+
+
+@app.get("/metrics", tags=["ops"])
+async def prometheus_metrics(principal: Principal = Depends(_metrics_principal)) -> Response:
+    """运行指标：Prometheus 文本格式，聚合 `jobs` / `runs` 台账，不建计数器。
+
+    三个运维端点分工必须分清，否则故障时只能翻日志猜：
+
+        /health   进程还活着吗（进程内、不碰库）
+        /ready    现在能接请求吗（库结构、鉴权、配置）
+        /metrics  过去这段时间它到底干了什么（任务成功率、延迟、token、配额）
+
+    指标口径以台账为准（`metrics.py` 顶部有理由）。这里只做取数 + 格式化，
+    不写库、不改状态——`GET` 语义必须保持只读。
+    """
+    with open_db() as conn:
+        body = metrics.collect(
+            conn,
+            tenant_id=principal.tenant_id,
+            daily_quota=principal.daily_token_quota,
+        )
+    return Response(content=body, media_type=metrics.CONTENT_TYPE)
 
 
 @app.get("/v1/datasets", tags=["analysis"])

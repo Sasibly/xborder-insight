@@ -103,7 +103,7 @@ make jobs-archive     # 归档 30 天前完成的任务结果（默认预演，Y
 make key-create TENANT=acme QUOTA=200000 RPM=120   # 明文只打印一次
 curl -H "Authorization: Bearer <key>" http://127.0.0.1:8000/v1/jobs
 
-# 10. 交付冒烟：临时库 + 临时端口 + 建密钥 + 提交任务 + 15 项断言
+# 10. 交付冒烟：临时库 + 临时端口 + 建密钥 + 提交任务 + 17 项断言
 ./smoke.cmd            # 或 make smoke
 ./smoke.cmd --target docker   # 构建镜像并起容器，额外断言非 root 与 HEALTHCHECK
 ```
@@ -257,7 +257,7 @@ LLM 应用的改动（换模型、调 prompt、改切片）没有编译错误，
 
 | 层 | 内容 | 失败意味着 |
 | --- | --- | --- |
-| 测试 | 437 passed + 1 xfailed：契约解析、机会分公式、聚类阈值边界、极性判定、HTTP 契约、迁移可逆性、状态机、参数闸门与适用区间、FBA 版本定档/缺口审计/费用包络、利润模型、贸易术语分支、合规三态、决策合成、决策接口、任务幂等与租约、密钥与限流配额、跨租户隔离、结果归档与幂等键存活、聚类评测与标定阈值守卫、**Dockerfile 静态契约（非 root / 探针 / 入口顺序 / 换行 / 锁文件）** | 数学或对外契约被破坏 |
+| 测试 | 680 passed + 1 xfailed：契约解析、机会分公式、聚类阈值边界、极性判定、HTTP 契约、迁移可逆性、状态机、参数闸门与适用区间、FBA 版本定档/缺口审计/费用包络、利润模型、贸易术语分支、合规三态、决策合成、决策接口、任务幂等与租约、密钥与限流配额、跨租户隔离、结果归档与幂等键存活、聚类评测与标定阈值守卫、**Dockerfile 静态契约（非 root / 探针 / 入口顺序 / 换行 / 锁文件）**、**`/metrics` 口径（成功率分母、分位口径、额度不出现 0、标签转义、抓取不吃限流）** | 数学或对外契约被破坏 |
 | 迁移 | `up → down → up` 后比对 schema 指纹（临时库，不碰真库） | 回滚会失败，或重复执行不可幂等 |
 | 评测 | 复跑 P/R/F1、token/条、调用次数、P95 延迟 | 链路跑不通或成本失控 |
 | 基线 diff | 与 `tests/baseline.json` 比对，阈值见 `tests/gates.json` | 指标真实退化 |
@@ -705,24 +705,26 @@ python scripts/smoke.py --target remote \
   --base-url http://host:8000 --api-key xb_xxx  # 打一个已跑起来的环境
 ```
 
-local 目标 15 项断言，docker 目标 17 项（多「非 root」与「HEALTHCHECK」两条容器专属断言）。local 实测输出（mock，2026-11-21 重跑，schema 已到 v9）：
+local 目标 17 项断言，docker 目标 19 项（多「非 root」与「HEALTHCHECK」两条容器专属断言）。local 实测输出（mock，2026-11-23 重跑，schema v13，17/17）：
 
 ```
 01 /health 存活                          {"status":"ok","run_mode":"mock"}
-02 /ready 就绪且 schema 与源码一致        schema=v9 auth=required
+02 /ready 就绪且 schema 与源码一致        schema=v13 auth=required
 03 /ready 回报 auth=required
 04 无密钥访问 /v1/jobs → 401 + WWW-Authenticate
-05 创建租户密钥                           tenant=smoke-a / smoke-b
-06 /v1/datasets 可读                     air_purifier, coffee_machine, electric_kettle, pet_fountain
-07 提交分析任务 → 202                     status=queued
-08 分析任务执行完成                       llm_calls=3
-09 结果含主题与证据                       3 个主题 · 3 条评论
-10 同键重放 → 同一 job_id                 Idempotency-Replayed=true
-11 同键换请求体 → 409                     idempotency_conflict
-12 另一租户读同一任务 → 404
-13 执行台账每次尝试一条                    attempt=1
-14 提交决策任务 → 202
-15 决策任务出结论                         verdict=NO_GO
+05 无密钥访问 /metrics → 401
+06 /metrics 返回 Prometheus 文本且关键指标族在场
+07 创建租户密钥                           tenant=smoke-a / smoke-b
+08 /v1/datasets 可读                     air_purifier, coffee_machine, electric_kettle, pet_fountain
+09 提交分析任务 → 202                     status=queued
+10 分析任务执行完成                       llm_calls=3
+11 结果含主题与证据                       3 个主题 · 3 条评论
+12 同键重放 → 同一 job_id                 Idempotency-Replayed=true
+13 同键换请求体 → 409                     idempotency_conflict
+14 另一租户读同一任务 → 404
+15 执行台账每次尝试一条                    attempt=1
+16 提交决策任务 → 202
+17 决策任务出结论                         verdict=NO_GO
 ```
 
 几处刻意的写法：
@@ -742,7 +744,7 @@ AUTH_REQUIRED=false 起服务 → 第 03、04 项变红，退出码 1
 库未迁移就起服务           → /ready 503，退出码 2（环境错误，不是「通过」）
 ```
 
-### 容器冒烟：已实测 17/17
+### 容器冒烟：已实测 17/17（11-19 记录；11-23 补 `/metrics` 后应为 19 项，未重跑 docker）
 
 ```text
 17 项全过（docker 目标）。默认基础镜像 python:3.13-slim 与 MCR devcontainers 各跑一遍，均为 17/17、EXIT=0。
@@ -834,7 +836,7 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 | live 延迟余量薄 | qwen-plus P95 2835 ms，SLA 3000 ms | 只剩 165 ms 余量，峰值抖动或并发升高就会触线 |
 | 已知规则缺口 | `died` 在关键词表却不在负面词表，五星评论里的隐性故障会误判为正面 | 已在 `tests/test_polarity.py` 标为 xfail，补词表会触发 XPASS 提醒重拍基线 |
 | 门禁不是测试岗 | 门禁只能证明「没变差」，不能证明「覆盖了没见过的输入」 | 新场景靠 bad case 回流队列（P4）补进 gold set |
-| 成本参数多数未核实 | 12 项成本参数中仅 1 项 verified（3.5% 燃油附加费），其余 11 项 draft、value 为空 | 内置参数不可用于计算；决策接口改由调用方提供成本档案，参数表只作为「待核实清单」 |
+| 成本参数多数未核实 | 12 项中仅 1 项 verified（3.5% 燃油附加费）；其余 11 项**已按官方/市场口径填值但仍为 draft**（`m0013`，缺官方「生效日期」不升状态） | `require()` 仍拒绝一切 draft，所以内置参数**依然不能**参与计算；决策接口继续由调用方提供成本档案，参数表只作「待核实清单」。填值只解决「有人知道这个数从哪来」，不解决「这个数被核实过」 |
 | 毛利只差五个数，但不先做 CLI | 利润模型与 `POST /v1/decision` 已接通，FBA 四台已有单点；缺的是售价、采购价、佣金率、头程、关税、退货率的**出处** | 只填售价与采购价会得到 **30.99%** 的毛利率，补齐头程/关税/退货后是 **6.90%**，中间不报错——因为 `inbound_freight` / `duty_rate` / `return_rate` 各自有默认 0。所以在数到齐之前不加 `db.py profit`：命令一旦存在就等于邀请人走最乐观那条路径。护栏见 `tests/test_profit_guardrails.py`（3 条），字段契约与实测差值见 `docs/04` §14；价格已到齐（H16 关闭），仍缺的是头程（H15）与尺寸口径（H19） |
 | FBA 只覆盖非服装与危险品的部分尺寸段 | 402 行全 verified：标准尺寸 3 期 378 行 + 大件 2026 两期 24 行。服装整段、超大件整段、2027 的大件（官方十档）均未录 | 这几类商品与日期**报缺而不是顶替**：`resolve()` 抛 `param_unverified`（503）。标准尺寸与 12 个既有锚点交叉一致；大件用官方 baby cot 算例复算（7.90 lb → $10.21）并做了跨类别/跨期差值自洽校验。两者都未做 HTML 表格逐格人工复核（`docs/07` H12）。复核工具已就位：`db.py fba-export` 导出 402 行、行号稳定、导出可重复，`db.py fba-review --in` 回收结论并以退出码 0/1/3 区分「全一致 / 有错 / 还没核完」；空结论与截断的表都算未复核，不会因为「表里没写错」就放行 |
 | 版本区间重叠拦不住 | `UNIQUE` 只保证同一格同一起点唯一；版本之间是否覆盖同一天，数据库不查 | 只能由 `audit()` 与 `pick_version()` 检出：重叠时直接拒绝服务，而不是挑一个看起来合理的那期 |
