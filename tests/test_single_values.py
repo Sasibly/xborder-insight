@@ -130,3 +130,69 @@ def test_the_box_is_worth_more_than_the_price_concession():
     assert box_gain == pytest.approx(0.40)
     assert fee_gain == pytest.approx(2.55)
     assert fee_gain > box_gain * 6
+
+
+# ------------------------------------------------------------ 成交价（§28）
+
+
+def test_signed_price_is_exactly_the_ceiling_we_precommitted_to():
+    """成交 $24.30 就是 §27 预先定死的那个顶——没有临场加价。
+
+    这条守的不是算术，是纪律：一旦有人把成交价改成 $24.50 之类的「再让一档」，
+    它立刻变红，因为 14.76% 已经掉出线。
+    """
+    signed = 24.30
+    ceiling = 24.30
+    assert signed == ceiling
+    assert _purifier(signed) >= THRESHOLD
+
+    # 再让一档就不成立
+    assert _purifier(24.50) < THRESHOLD
+
+
+def test_signed_price_survives_the_returns_stress_but_not_a_box_downgrade():
+    """成交价的两种翻车方式，代价完全不同。
+
+    - 退货率涨到 17%（压测档）：9.18%，仍为正 → 经得起，不必重谈。
+    - 箱规失守（FBA $14.00）：11.74%，掉 3.31 个点 → 每件 −$2.65，必须靠 PI 条款挡。
+    """
+    stress = _margin(
+        24.30, fba=11.35,
+        common={**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": 0.17},
+    )
+    assert stress == pytest.approx(0.0918, abs=5e-4)
+    assert stress > 0, "压力档为正才符合「两档都为正才谈」的规则"
+
+    box_fail = _margin(
+        24.30, fba=14.00,
+        common={k: v for k, v in PURIFIER.items() if k != "fba_fee"},
+    )
+    assert box_fail == pytest.approx(0.1174, abs=5e-4)
+    assert _purifier(24.30) - box_fail > 0.03, "掉档 3.3 个点，比任何压价让步都贵"
+
+
+def test_signed_price_has_a_known_residual_under_the_strict_returns_rate():
+    """12.6% 取严档下是 14.35%——差 0.65 点，但**仍为正**。
+
+    这就是 §28.4 说的「残差风险」：签不撤回，只是「15% 达标」这句话不成立。
+    把它写成断言，是为了防止有人拿 15.05% 去对外引用而不带前提。
+    """
+    strict = _margin(
+        24.30, fba=11.35,
+        common={**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": 0.126},
+    )
+    assert strict == pytest.approx(0.1435, abs=5e-4)
+    assert strict < THRESHOLD
+    assert strict > 0, "低于目标线但没亏——所以处理方式是接受或补价，不是撕单"
+
+    # 若真按 12.6% 执行，补 $0.20 就回到线下沿
+    assert _margin(
+        24.10, fba=11.35,
+        common={**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": 0.126},
+    ) > strict
+
+
+def test_signed_price_profit_per_unit():
+    """15.05% × $79.99 = $12.04/件——谈判桌上唯一该记住的绝对数。"""
+    gross = _purifier(24.30) * 79.99
+    assert gross == pytest.approx(12.04, abs=0.02)
