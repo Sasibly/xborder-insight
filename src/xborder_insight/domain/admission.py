@@ -46,6 +46,20 @@ VERDICT_LABELS = {
 #: 目标毛利率。换它就要重算 0.6176 与下面所有阈值，不能只改这一个数。
 TARGET_MARGIN = 0.15
 
+#: 广告空间线：盈亏平衡 ACOS 的下限，与 `decision.MIN_BREAKEVEN_ACOS` 是同一个数。
+#:
+#: 为什么要在准入里也算这一条：盈亏平衡 ACOS **数值上等于毛利率**（`profit.py`
+#: 里 `breakeven_acos = gross_profit / selling_price`），所以「毛利率 ≥ 15%」
+#: 和「ACOS 上限 ≥ 20%」不是两条独立的门槛，后者严格更紧——毛利率 15% 的品，
+#: ACOS 上限就是 15%，在真实竞价环境里投不出量（`decision.py` 原文：
+#: 「有毛利但卖不动」）。
+#:
+#: 两条线因此回答两个不同的问题，谈价时不能混用：
+#:   15% 线 —— 「这单做下来还剩多少」，是 `docs/04` §18 那条不等式的口径；
+#:   20% 线 —— 「还剩的这点够不够把货卖出去」，是 `docs/04` §10.4 与 §15.5 的口径。
+#: 开口价应当落在 20% 线上，否则谈成的价仍然只是「有毛利、卖不动」。
+AD_SPACE_FLOOR = 0.20
+
 #: 三个口径假设。改成 `verified` 之前，任何对外数字都要连这三个前提一起写。
 DEFAULT_REFERRAL = 0.15
 DEFAULT_RETURNS = 0.08
@@ -125,6 +139,10 @@ class Admission:
     cogs_reduction_pct: float | None = None
     overrun_pts: float | None = None
     min_price: float | None = None
+    #: 广告空间线（`AD_SPACE_FLOOR`）上的两个对应数。`max_cogs` / `min_price`
+    #: 是 15% 线的，两者混用会把「有毛利、卖不动」当成谈得成。
+    max_cogs_ad_space: float | None = None
+    min_price_ad_space: float | None = None
     gate: GateVerdict | None = None
     notes: tuple[str, ...] = ()
     #: 原样带回输入的两个数。批量输出要显示它们，但 `Admission` 本身不该
@@ -218,32 +236,39 @@ def screening_gate(price: float | None, cogs: float | None) -> GateVerdict:
     )
 
 
-def _solve_max_cogs(candidate: Candidate, fba_fee: float) -> float | None:
-    """二分求「毛利率正好等于目标」时的采购价。没有闭式解可用：
+def _solve_max_cogs(
+    candidate: Candidate, fba_fee: float, target: float = TARGET_MARGIN
+) -> float | None:
+    """二分求「毛利率正好等于 target」时的采购价。没有闭式解可用：
     售价 ≥ $166.67 时退款管理费撞 `min($5, 20%×佣金)` 的上限，线性解会偏高。
     采购价为 0 都达不到目标时返回 None（说明售价太低，不是采购太贵）。
+
+    `target` 显式传参是为了同时解 15% 线与 20% 广告空间线：两条线只差这一个数，
+    复制一份函数会让两条线日后各改各的。
     """
     low, high = 0.01, float(candidate.selling_price or 0.0) * 2
-    if _model(candidate, low, fba_fee).gross_margin < TARGET_MARGIN:
+    if _model(candidate, low, fba_fee).gross_margin < target:
         return None
     for _ in range(120):
         mid = (low + high) / 2
-        if _model(candidate, mid, fba_fee).gross_margin < TARGET_MARGIN:
+        if _model(candidate, mid, fba_fee).gross_margin < target:
             high = mid
         else:
             low = mid
     return (low + high) / 2
 
 
-def _solve_min_price(candidate: Candidate, fba_fee: float) -> float | None:
-    """二分求「毛利率正好等于目标」时的售价。采购为 0 都到不了 15% 时返回 None。"""
+def _solve_min_price(
+    candidate: Candidate, fba_fee: float, target: float = TARGET_MARGIN
+) -> float | None:
+    """二分求「毛利率正好等于 target」时的售价。采购为 0 都到不了目标时返回 None。"""
     cogs = float(candidate.quoted_cost or 0.0)
     low, high = cogs * 1.01, cogs * 30
-    if _model(candidate, cogs, fba_fee, price=high).gross_margin < TARGET_MARGIN:
+    if _model(candidate, cogs, fba_fee, price=high).gross_margin < target:
         return None
     for _ in range(120):
         mid = (low + high) / 2
-        if _model(candidate, cogs, fba_fee, price=mid).gross_margin < TARGET_MARGIN:
+        if _model(candidate, cogs, fba_fee, price=mid).gross_margin < target:
             low = mid
         else:
             high = mid
@@ -309,6 +334,8 @@ def evaluate(candidate: Candidate) -> Admission:
     gate = screening_gate(price, cogs)
     max_cogs = _solve_max_cogs(candidate, fba_fee)
     min_price = _solve_min_price(candidate, fba_fee)
+    max_cogs_ad = _solve_max_cogs(candidate, fba_fee, AD_SPACE_FLOOR)
+    min_price_ad = _solve_min_price(candidate, fba_fee, AD_SPACE_FLOOR)
 
     if margin >= TARGET_MARGIN:
         return Admission(
@@ -322,6 +349,8 @@ def evaluate(candidate: Candidate) -> Admission:
             cogs_reduction_pct=None,
             overrun_pts=0.0,
             min_price=min_price,
+            max_cogs_ad_space=max_cogs_ad,
+            min_price_ad_space=min_price_ad,
             gate=gate,
             notes=_notes(gate, margin),
             selling_price=price,
@@ -345,6 +374,8 @@ def evaluate(candidate: Candidate) -> Admission:
         cogs_reduction_pct=reduction,
         overrun_pts=(TARGET_MARGIN - margin) * 100,
         min_price=min_price,
+        max_cogs_ad_space=max_cogs_ad,
+        min_price_ad_space=min_price_ad,
         gate=gate,
         notes=_notes(gate, margin),
         selling_price=price,

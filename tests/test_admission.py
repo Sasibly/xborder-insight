@@ -274,3 +274,75 @@ def test_explicit_fba_wins_over_ratio():
                       duty_rate=0.125, fba_fee=5.0, fba_ratio=0.30)
     )
     assert result.gross_margin > 0.25  # 用 0.30 占比（$18）时只有 9.4%
+
+
+# ---------- 广告空间线：两条线不能混用（`docs/04` §22） -----------------------
+#
+# 15% 线回答「这单还剩多少」，20% 线回答「剩下的够不够把货卖出去」。
+# 盈亏平衡 ACOS 数值上等于毛利率（`profit.py`），所以后者严格更紧——
+# 拿 15% 线的上限去开口，谈成的价仍然只是「有毛利、投不出量」。
+#
+# 这两个 FBA 是 §21.3 的现行口径（净化器新箱 $11.35、咖啡机 A 口径 $14.40），
+# 与上面 FIVE 里 11-21 那组（净化器还按 24×15×15 = $23.84）不是同一批数，
+# 刻意分开写：混用会让 §17 的历史表和 §21 的现行表互相打脸。
+
+CURRENT = [
+    ("air_purifier", 79.99, 32.50, 0.125, 11.35, 27.60, 24.12),
+    ("coffee_machine", 63.99, 18.50, 0.237, 14.40, 14.90, 12.36),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "price", "cogs", "duty", "fba", "cap_15", "cap_20"), CURRENT
+)
+def test_ad_space_line_is_lower_than_the_15_percent_line(
+    name, price, cogs, duty, fba, cap_15, cap_20
+):
+    """两条线的上限都必须与 §22 表一致，且 20% 线严格更低。
+
+    差值是谈判的全部余地：净化器 $3.48、咖啡机 $2.54。若某次改动让这个差
+    变成 0（例如把 AD_SPACE_FLOOR 误设成 TARGET_MARGIN），这条会红。
+    """
+    result = adm.evaluate(_cand(name, price, cogs, duty, fba))
+    assert result.max_cogs == pytest.approx(cap_15, abs=0.01)
+    assert result.max_cogs_ad_space == pytest.approx(cap_20, abs=0.01)
+    assert result.max_cogs_ad_space < result.max_cogs
+    assert result.max_cogs - result.max_cogs_ad_space == pytest.approx(
+        cap_15 - cap_20, abs=0.02
+    )
+
+
+@pytest.mark.parametrize(("name", "price", "cogs", "duty", "fba"), [
+    ("air_purifier", 79.99, 32.50, 0.125, 11.35),
+    ("coffee_machine", 63.99, 18.50, 0.237, 14.40),
+])
+def test_ad_space_solution_put_back_gives_exactly_floor(name, price, cogs, duty, fba):
+    """代回去必须正好踩在 20%，与 15% 线那条同一套校验。"""
+    result = adm.evaluate(_cand(name, price, cogs, duty, fba))
+    assert result.max_cogs_ad_space is not None
+    at_cap = adm.evaluate(_cand(name, price, result.max_cogs_ad_space, duty, fba))
+    assert at_cap.gross_margin == pytest.approx(adm.AD_SPACE_FLOOR, abs=1e-6)
+
+
+def test_ad_space_floor_is_the_same_number_decision_uses():
+    """`admission.AD_SPACE_FLOOR` 与 `decision.MIN_BREAKEVEN_ACOS` 必须同值。
+
+    两处各写一个数，迟早会一个改 20%、一个留 15%——那时命令说「过得去」、
+    决策说「NO-GO」，而两边都自称按 `docs/04` 算的。
+    """
+    from xborder_insight.domain import decision
+
+    assert adm.AD_SPACE_FLOOR == decision.MIN_BREAKEVEN_ACOS
+
+
+def test_passing_15_percent_without_ad_space_is_flagged():
+    """净化器谈到 $25.00（开口价）：过 15% 线，但离 20% 线还差 $0.88。
+
+    这条钉的是「开口价该报多少」这个判断本身——它翻过两次
+    （−48.5% → −15.1% → 现在这条 20% 线要求 −25.8%），所以要有测试守着。
+    """
+    result = adm.evaluate(_cand("air_purifier", 79.99, 25.00, 0.125, 11.35))
+    assert result.verdict == adm.VERDICT_PASS
+    assert result.gross_margin == pytest.approx(0.1874, abs=1e-4)
+    assert result.gross_margin < adm.AD_SPACE_FLOOR
+    assert result.max_cogs_ad_space == pytest.approx(24.12, abs=0.01)

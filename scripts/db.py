@@ -655,8 +655,8 @@ def _dump_screen(args) -> int:
     print(f"  闸二：{result.label}　毛利 {result.gross_margin:.2%}")
     if result.verdict == admission.VERDICT_FAIL:
         print(f"    {result.reason}")
-        print(f"    采购必须 ≤ {money(result.max_cogs)}（现 {money(args.cogs)}）")
-        print(f"    售价必须 ≥ {money(result.min_price)}（现 {money(args.price)}）")
+        print(f"    15% 线：采购必须 ≤ {money(result.max_cogs)}（现 {money(args.cogs)}）")
+        print(f"    15% 线：售价必须 ≥ {money(result.min_price)}（现 {money(args.price)}）")
         print(
             f"    超预算 {result.overrun_pts:.2f} 个点 —— 与毛利缺口是同一个数"
             "（`docs/04` §18.2）"
@@ -669,6 +669,25 @@ def _dump_screen(args) -> int:
         if room is not None:
             print(f"    采购价还有 {money(room)} 的空间才到 15% 线")
         print(f"    15% 线所需售价 {money(result.min_price)}")
+
+    # 广告空间线：盈亏平衡 ACOS 数值上等于毛利率，所以这条线严格比 15% 更紧。
+    # 两条都打印，是因为谈价时最容易犯的错就是拿 15% 线的上限去开口——
+    # 谈成了仍然是「有毛利、投不出量」（`decision.py` 的 MIN_BREAKEVEN_ACOS）。
+    if result.max_cogs_ad_space is not None and args.cogs:
+        ad_cap = result.max_cogs_ad_space
+        gap = ad_cap - args.cogs
+        head = f"  广告空间线（ACOS ≥ {admission.AD_SPACE_FLOOR:.0%}）：采购必须 ≤ {money(ad_cap)}"
+        if gap >= 0:
+            print(f"{head}　已过线（还有 {money(gap)} 空间）")
+        else:
+            reduction = abs(gap) / args.cogs
+            print(f"{head}（现 {money(args.cogs)}，还要再降 {reduction:.1%}）")
+        if result.gross_margin is not None and result.gross_margin >= admission.TARGET_MARGIN:
+            if result.gross_margin < admission.AD_SPACE_FLOOR:
+                print(
+                    "  ! 毛利过了 15% 线、没过广告空间线：这个价谈成了也只能靠自然单，"
+                    "广告投不出量（`docs/04` §10.4 / §15.5 同一口径）"
+                )
     for note in result.notes:
         print(f"  ! {note}")
 
