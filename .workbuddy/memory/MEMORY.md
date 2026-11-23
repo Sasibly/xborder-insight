@@ -43,6 +43,12 @@
   演练前先确认目标目录里没有 `data/app.sqlite3`，否则等于没做。
 - 沙箱/CI 里 pytest 删旧临时根会触发 safe-delete 策略，命令被判失败但测试其实全绿：
   用 `PYTEST_ADDOPTS="--basetemp=/tmp/pytest-xbi"`，不改仓库。
+- **改 `schemas.py` 字段必须写 `description=`**（11-23 20:05 起）：`tests/test_openapi_contract.py`
+  9 条守门——字段缺说明、六项成本被加回数字默认值、文档错误体与真实响应不一致，三种都红。
+  `/docs` 与 `/openapi.json` 不许要鉴权（有单独用例）。`/v1/decision` 的 422/503 引用
+  `ErrorResponse`，加新错误码时记得同步 `responses`。
+- **容器冒烟 v14 已重跑 19/19**（20:05，`/ready` 自报 `schema=v14`）；门禁 776 条。
+  README 里「v14 未重跑」那句已删——别再引用。改镜像或加迁移就重跑一次 `make smoke-docker`。
 
 ## 退货率压测与谈判锚（2026-11-23 16:55）
 

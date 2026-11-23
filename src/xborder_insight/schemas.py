@@ -134,49 +134,128 @@ class CostProfileInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # 报价，口径由 incoterm 决定：FOB 下是离岸价，DDP 下是完税到门价
-    quoted_price: float = Field(ge=0)
-    selling_price: float = Field(gt=0)
+    quoted_price: float = Field(
+        ge=0,
+        description="供应商报价（USD/件）。口径由 incoterm 决定：FOB 是离岸价，DDP 是完税到门价。",
+    )
+    selling_price: float = Field(
+        gt=0, description="站点售价（USD/件），按前台实际成交价填。"
+    )
 
     # 六项成本**没有默认值**：不填就是 None，不是 0。
     # 之前它们是 `default=0.0`，于是「漏填」与「这项确实是 0」在契约层就分不出来——
     # 咖啡机只填售价与采购价能算出 30.99%，补齐后是 6.90%（`docs/04` §14.3）。
     # 现在不填只能是 None，模型据此知道算出来的是上界，并拒绝把它报成 GO
     # （`docs/04` §31）。要声明「真的是 0」请显式写 0。
-    inbound_freight: float | None = Field(default=None, ge=0)
-    duty_rate: float | None = Field(default=None, ge=0, le=1)
+    inbound_freight: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "头程单件分摊（USD/件）。不填＝未指定（按 0 计入，结论最多到 NEED_MORE_INFO），"
+            "不等于 0；CFR/CIF/DAP/DDP 下报价已含运费，不填不算缺。"
+        ),
+    )
+    duty_rate: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="有效关税率（0–1，不是百分数）。不填＝未指定；DDP 下报价已含关税，不填不算缺。",
+    )
 
-    referral_rate: float = Field(ge=0, le=1)
+    referral_rate: float = Field(
+        ge=0, le=1, description="平台佣金率（0–1）。必填：它是毛利里唯一有官方区间的项。"
+    )
 
     # FBA 费：知道就给数，不知道就交给费率表算包络。**没有「默认 0」这个选项**——
     # 标准尺寸商品的配送费在 $2.4–13.4 之间，默认 0 等于每件静默多算这么多毛利。
-    fba_fee: float | None = Field(default=None, ge=0)
+    fba_fee: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "单件 FBA 配送费（USD）。知道就给数；不知道则给 product_class + ship_date"
+            "（或包装事实）由费率表算区间。没有「默认 0」——标准尺寸配送费在 $2.4–13.4，"
+            "填 0 等于每件静默多算这么多毛利。"
+        ),
+    )
     # 算包络必需的两个维度：用哪套表（产品类别）、哪一期（发货日期）。
-    product_class: str | None = None
-    ship_date: date | None = None
+    product_class: str | None = Field(
+        default=None,
+        description=(
+            "官方费率表口径：non_apparel / apparel / dangerous_goods。"
+            "三套表差 18.8–25.9%，不能猜。"
+        ),
+    )
+    ship_date: date | None = Field(
+        default=None,
+        description="计划发货日期，决定适用哪一期费率（按生效区间匹配，不按年份字面值）。",
+    )
     # 「部分已知」的收窄条件：知道是标准件、知道重量上界，就不该按全表 20 lb 报区间。
     # 这两个是低层裁剪，不考虑体积重；知道包装事实时改用下面那组。
-    fba_size_tiers: list[str] | None = None
-    fba_weight_range_oz: tuple[float, float] | None = None
+    fba_size_tiers: list[str] | None = Field(
+        default=None, description="已知的尺寸段（可多值，用于收窄包络）。"
+    )
+    fba_weight_range_oz: tuple[float, float] | None = Field(
+        default=None, description="已知的计费重量范围（oz），下界须大于 0。"
+    )
 
     # 包装事实：给了这组，产品类别、尺寸段、计费重量都由它推出来，
     # 调用方不必（也不许同时）自己判断 product_class 与 size_tier。
     # has_lithium_battery 没有默认值——它是 BOM 事实，猜成普货每件少算约 $1。
-    has_lithium_battery: bool | None = None
-    unit_weight_oz: float | None = Field(default=None, gt=0)
-    package_dims_in: tuple[float, float, float] | None = None
-    fits_standard_size: bool | None = None
+    has_lithium_battery: bool | None = Field(
+        default=None,
+        description=(
+            "BOM 事实：是否含锂电池。含锂走危险品费率（大件 +$1.28/件）。"
+            "没有默认值——猜成普货每件会少算约 $1。"
+        ),
+    )
+    unit_weight_oz: float | None = Field(
+        default=None, gt=0, description="单件实重（oz），用于定价重量。"
+    )
+    package_dims_in: tuple[float, float, float] | None = Field(
+        default=None, description="包装三边（英寸），量包装不量裸机。"
+    )
+    fits_standard_size: bool | None = Field(
+        default=None, description="包装能否装进 18×14×8 英寸（大号标准件上限）。"
+    )
     # 知道「包装不超过多大」但不知道精确三边时用这个：它直接约束体积重。
-    package_volume_in3: float | None = Field(default=None, gt=0)
+    package_volume_in3: float | None = Field(
+        default=None, gt=0, description="包装体积上界（立方英寸），用于约束体积重。"
+    )
 
     # 退货率。None = 调用方没指定（模型按 0 计入，但结论最多到 NEED_MORE_INFO）。
     # 要用库里的两档（含压力档），改用 `DecisionRequest.sku_key`，两者互斥。
-    return_rate: float | None = Field(default=None, ge=0, le=1)
-    returns_handling_fee: float | None = Field(default=None, ge=0)
-    returns_refund_admin_rate: float = Field(default=0.20, ge=0, le=1)
-    returns_goods_loss_ratio: float | None = Field(default=None, ge=0, le=1)
-    returns_inbound_loss_ratio: float | None = Field(default=None, ge=0, le=1)
+    return_rate: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "基线退货率（0–1）。不填＝未指定；想要两档压测（含压力档与「值不值得谈价」）"
+            "请改用顶层 sku_key，两者互斥。"
+        ),
+    )
+    returns_handling_fee: float | None = Field(
+        default=None, ge=0, description="单件退货处理费（USD）。退货率为 0 时不算缺。"
+    )
+    returns_refund_admin_rate: float = Field(
+        default=0.20,
+        ge=0,
+        le=1,
+        description="退款管理费率（0–1）。官方口径 min($5, 20%×佣金)，故保留默认 0.20。",
+    )
+    returns_goods_loss_ratio: float | None = Field(
+        default=None, ge=0, le=1, description="退货商品不可再售比例（0–1）。退货率为 0 时不算缺。"
+    )
+    returns_inbound_loss_ratio: float | None = Field(
+        default=None, ge=0, le=1, description="退货头程沉没比例（0–1）。退货率为 0 时不算缺。"
+    )
 
-    incoterm: str | None = None
+    incoterm: str | None = Field(
+        default=None,
+        description=(
+            "贸易术语（FOB/EXW/CFR/CIF/DAP/DDP…），决定头程与关税是否已含在报价里。"
+            "不填按 FOB 口径处理。"
+        ),
+    )
 
     @field_validator("incoterm")
     @classmethod
@@ -294,15 +373,49 @@ class CostProfileInput(BaseModel):
         return self
 
 
+class ErrorResponse(BaseModel):
+    """统一错误体（对外契约，不含堆栈）。
+
+    只用于让 `/openapi.json` 把 422 / 503 的错误形状也描述出来。
+    真实响应由 `errors.AppError.to_public()` 生成，字段与这里逐字对应——
+    两处不一致会被 `tests/test_openapi_contract.py` 抓住。
+    """
+
+    code: str = Field(description="错误码，如 input_invalid / return_rate_missing")
+    message: str = Field(description="给人看的一句话，直接可行动")
+    request_id: str = Field(description="请求 id，报障时带上它才能定位日志")
+
+
 class DecisionRequest(BaseModel):
+    """一次选品决策的输入。
+
+    结论分三档（`GO` / `NO_GO` / `NEED_MORE_INFO`），判定顺序按否决力：
+    合规 > 毛利 > 广告空间 > 需求。所有因素都逐条进响应的 `reasons`，
+    不只记触发否决的那一条。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    asin: str = Field(min_length=1, max_length=32)
-    category: str = Field(min_length=1, max_length=64)
-    marketplace: str = Field(default="US", min_length=2, max_length=8)
-    opportunity_score: float = Field(ge=0, le=1)
-    cost: CostProfileInput
-    data_provenance: str = Field(default="caller_provided", max_length=120)
+    asin: str = Field(
+        min_length=1, max_length=32, description="外部商品标识。只做关联，不参与计算。"
+    )
+    category: str = Field(
+        min_length=1, max_length=64, description="品类键，用于查合规规则表（如 air_purifier）。"
+    )
+    marketplace: str = Field(
+        default="US", min_length=2, max_length=8, description="站点，默认 US。"
+    )
+    opportunity_score: float = Field(
+        ge=0, le=1, description="机会分（0–1），来自评论洞察，不达标会触发「需求不足」。"
+    )
+    cost: CostProfileInput = Field(
+        description="成本档案。六项成本不填＝未指定（结论降级），不是 0。"
+    )
+    data_provenance: str = Field(
+        default="caller_provided",
+        max_length=120,
+        description="成本数据的来源说明，会原样回显——不把他人的估算冒充成系统的核实结论。",
+    )
 
     #: 内部 SKU 键，指向 `product_returns` 里登记的两档退货率。
     #:
@@ -313,7 +426,17 @@ class DecisionRequest(BaseModel):
     #: 两个来源**互斥**，理由与 `fba_fee` vs 包装事实相同：同时给会出现
     #: 「基线来自调用方、压力档来自库」这种两个数不同源的混搭，
     #: 而压测的全部意义就在于两档可比——不同源的两档比出来的差值是假的。
-    sku_key: str | None = Field(default=None, min_length=1, max_length=64)
+    sku_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "内部 SKU 键，指向 product_returns 里登记的两档退货率。给了它就跑压力档，"
+            "响应多一个 returns 块（两档毛利 + 值不值得谈 + 证据强弱）；"
+            "与 cost.return_rate 互斥（422）——两档不同源时差值无意义。"
+            "未登记该 key 返回 503 return_rate_missing。"
+        ),
+    )
 
     @model_validator(mode="after")
     def _returns_has_one_source(self) -> "DecisionRequest":

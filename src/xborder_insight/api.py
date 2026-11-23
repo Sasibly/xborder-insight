@@ -32,7 +32,13 @@ from .llm import build_llm_client
 from .logging import log_event, new_request_id, request_id_var, setup_logging
 from .pipeline.analyze import analyze_reviews
 from .pipeline.ingest import load_reviews
-from .schemas import AnalysisReport, AnalyzeRequest, DecisionRequest, JobPayload
+from .schemas import (
+    AnalysisReport,
+    AnalyzeRequest,
+    DecisionRequest,
+    ErrorResponse,
+    JobPayload,
+)
 from .security import keys as api_keys
 from .security import quota as quota_mod
 from .service import decide as decide_service
@@ -412,7 +418,31 @@ def run_decision(payload: DecisionRequest) -> dict:
         return decide_service(conn, payload)
 
 
-@app.post("/v1/decision", tags=["decision"])
+@app.post(
+    "/v1/decision",
+    tags=["decision"],
+    response_description=(
+        "三档结论 + 逐条依据 + 利润明细 + `returns` 块（走 sku_key 时含两档毛利、"
+        "「值不值得谈」与证据强弱）+ `warnings`"
+    ),
+    responses={
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "入参不合法（`input_invalid`）。最常见的两种：包装事实与 `fba_fee` 同时给；"
+                "`sku_key` 与 `cost.return_rate` 同时给（退货率只能有一个来源）。"
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "结论依赖的数据未就绪。决策接口会出现 `return_rate_missing`"
+                "（`sku_key` 未在 product_returns 登记）；"
+                "参数闸门类错误见 runbook §7——那是设计，不是故障。"
+            ),
+        },
+    },
+)
 async def decide_product(
     payload: DecisionRequest, principal: Principal = Depends(current_principal)
 ) -> dict:
@@ -426,6 +456,9 @@ async def decide_product(
     `product_returns` 的两档，响应多一个 `returns` 块（含压力档与证据强弱）；
     不带则用 `cost.return_rate`，没有压力档。两个都给是 422——
     基线来自调用方、压力档来自库，两档不同源，比出来的差值是假的。
+
+    六项成本不留默认值（`docs/04` §31）：不填会进 `profit.missing_inputs`，
+    并把结论从 PASS 降级为 NEED_MORE_INFO——按 0 算出来的是上界，上界不得称 PASS。
 
     不做配额判定：本接口不调用模型，token 消耗为零，按额度拦它属于误伤。
     """
