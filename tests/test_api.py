@@ -7,13 +7,28 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from xborder_insight import api
 from xborder_insight.api import app
 
 
 def client() -> TestClient:
     return TestClient(app)
+
+
+def test_http_layer_never_reads_workspace_database():
+    """HTTP 层测试必须用隔离库，否则干净克隆会一排 503。
+
+    `data/app.sqlite3` 不进版本库。本机跑过 `db.py up`，依赖它的测试就永远绿；
+    换台干净机器，/ready、/v1/analyze、/metrics 四条一起红（2026-11-23 冷启动
+    演练实测 4 failed）。这里把「不许指向工作区库」钉住，让假设一旦被改回去就红。
+    """
+    workspace_db = Path(__file__).resolve().parents[1] / "data" / "app.sqlite3"
+
+    assert Path(api.DB_FILE).resolve() != workspace_db.resolve()
 
 
 def test_health_and_ready():

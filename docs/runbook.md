@@ -319,6 +319,74 @@ docker logs xborder 2>&1 | grep a1b2c3d4e5f6
 | 为了让决策接口返回 200 而给 draft 参数补「生效日期」 | 编出来的日期比没有日期更危险：它会让参数看起来被核实过 |
 | 用 `curl` 打 `/metrics` 时复用业务 key 的高频调用 | 抓取不记限流，业务调用记；混用会看不清到底谁在吃 rpm |
 
+## 13. 冷启动演练：换机器能不能跑起来
+
+P4 的判据是「换一台干净机器，三条命令跑起来」。**在自己的 `.venv` 里跑绿不算数**——
+本机跑过 `db.py up`、装过依赖、有缓存，能掩盖掉一半的交付缺陷。
+
+### 13.1 三条命令（README 原文）
+
+```bash
+python -m venv .venv
+./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt   # Linux/macOS 去掉 Scripts
+make check                                                          # Windows 无 make 时用 check.cmd
+```
+
+然后（第三条命令全绿之后）：
+
+```bash
+python scripts/db.py up     # 建库并升到最新版本；smoke 会自建临时库，但 serve 需要真库
+python scripts/smoke.py     # 17/17
+```
+
+### 13.2 2026-11-23 实测记录（`git clone` 到空目录 + 全新 venv）
+
+| 环节 | 结果 |
+| --- | --- |
+| `pip install -r requirements-dev.txt` | 通过，约 5 分钟（无缓存） |
+| 测试 | 695 passed + 1 xfailed |
+| 迁移往返 | v13，10 张业务表 |
+| 评测 | F1 0.6070 / P 0.7364 / R 0.5163，与基线逐位一致 |
+| `db.py up` | 13 条迁移全部应用，`data/app.sqlite3` 生成 |
+| `smoke.py` | 17/17，`/ready` 回 `schema=v13 auth=required` |
+
+### 13.3 这次演练真抓到的缺陷（已修）
+
+干净克隆首跑 **4 failed**，全是 503：
+
+```
+test_api.py::test_health_and_ready            KeyError: 'status'
+test_api.py::test_analyze_by_dataset_returns_report   503 != 200
+test_api.py::test_inline_reviews_path_works           503 != 200
+test_metrics.py::test_endpoint_serves_prometheus_text 503 != 200
+```
+
+根因不是代码 bug，是**测试依赖了一个不进版本库的文件**：`api.DB_FILE` 默认指向
+`<repo>/data/app.sqlite3`，而它在 `.gitignore` 里。本机因为跑过 `db.py up` 所以永远是绿的，
+换台机器 `/ready` 直接 503。
+
+修法（两处，不改生产逻辑）：
+
+- `tests/conftest.py` 加 session 级 autouse fixture `app_db_file`：在 pytest 临时目录建库并
+  跑完迁移，再把 `api.DB_FILE` 指过去，会话结束恢复。实测每条测试都拿隔离库，
+  不碰工作区文件（需要「库不存在」场景的两条用例自己再 `monkeypatch` 一次，行为不变）。
+- `tests/test_api.py::test_http_layer_never_reads_workspace_database`：断言 `api.DB_FILE`
+  不等于工作区的 `data/app.sqlite3`。假设一旦被改回去，这条先红。
+
+**这类缺陷的教训**：`make check` 全绿只证明「在这台机器上没退化」，不证明「别人能跑」。
+冷启动演练必须真的换目录、换 venv，且**先确认目标目录里没有 `data/app.sqlite3`**，
+否则演练等于没做。
+
+### 13.4 受限环境提示
+
+若在沙箱/CI 里 `make check` 因临时目录清理策略被拦（pytest 会周期性删除旧的
+`pytest-of-*` 临时根），用 pytest 原生环境变量把临时根固定到项目外的一个空目录即可，
+不需要改仓库：
+
+```bash
+PYTEST_ADDOPTS="--basetemp=/tmp/pytest-xbi" make check
+```
+
 ## 附录 A · 错误码总表
 
 响应体结构固定：`{"code": ..., "message": ..., "request_id": ...}`。
