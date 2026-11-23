@@ -7,6 +7,11 @@
     python scripts/db.py down --to 0 --yes   # 全部回滚（破坏性，必须 --yes）
     python scripts/db.py roundtrip           # 在临时库验证 up→down→up，不动真库
     python scripts/db.py params              # 参数核实进度
+    python scripts/db.py returns             # 逐 SKU 退货率台账（两档 + 证据强弱）
+    python scripts/db.py returns-set --sku purifier_desk_1752 --name 空气净化器 \\
+        --baseline 0.126 --stress 0.17 --evidence category_threshold \\
+        --source-note '后台路径' --effective-date 2026-11-16
+                                             # 登记一台的两档（写入 product_returns）
     python scripts/db.py fba                 # FBA 费率维表覆盖率与缺口
     python scripts/db.py fba-envelope --product-class dangerous_goods --price 59.99
                                              # 没有真实尺寸重量时，FBA 费能确定到什么范围
@@ -15,6 +20,9 @@
                                              # 回收复核结论并对账（只读库）
     python scripts/db.py screen --price 63.99 --cogs 18.50 --duty 0.237 --fba 14.40
                                              # 候选准入：这道品在 15% 线下还剩多少空间
+    python scripts/db.py screen --sku purifier_desk_1752 --price 79.99 \\
+        --cogs 24.30 --duty 0.125 --fba 11.35
+                                             # 两档退货率从 product_returns 取，自动压测
     python scripts/db.py screen --csv data/candidates/example.csv
                                              # 批量：一张候选表进，三组结论出
 
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sqlite3
 import sys
 import tempfile
 import unicodedata
@@ -38,7 +47,13 @@ sys.path.insert(0, str(ROOT / "src"))
 from xborder_insight.db import fba as fba_db  # noqa: E402
 from xborder_insight.db import fba_review  # noqa: E402
 from xborder_insight.db import migrate  # noqa: E402
-from xborder_insight.db.connection import MEMORY, connect, resolve_path  # noqa: E402
+from xborder_insight.db import product_returns as returns_db  # noqa: E402
+from xborder_insight.db.connection import (  # noqa: E402
+    MEMORY,
+    connect,
+    resolve_path,
+    table_names,
+)
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
 from xborder_insight.domain import admission  # noqa: E402
 from xborder_insight.domain import profiles  # noqa: E402
@@ -613,14 +628,165 @@ def _dump_transport(args) -> int:
     return 0
 
 
-def _dump_screen(args) -> int:
-    """候选准入。不碰数据库：缺口与目标价都是纯计算。
+def _need_product_returns(conn) -> bool:
+    """库没升到 m0014 时给一句能照着做的提示，而不是甩 "no such table"。"""
+    if "product_returns" in table_names(conn):
+        return True
+    print("[库未升级] 缺少 product_returns 表（m0014）。先跑：python scripts/db.py up")
+    return False
+
+
+def _dump_returns(conn, market: str | None) -> int:
+    """逐 SKU 退货率台账：两档、证据强弱、离 verified 还差什么。
+
+    这张表的价值不在于「有数」，而在于**把「这个数是读来的还是假设的」摆在同一行里**。
+    净化器 12.6% 与咖啡机 8% 在算毛利时地位相同、可信度差一档；
+    输出里不区分，报告就会把假设写成事实。
+    """
+    if not _need_product_returns(conn):
+        return 2
+    records = returns_db.list_all(conn, market)
+    cov = returns_db.coverage(conn, market)
+    print("逐 SKU 退货率（基线 → 压力档）")
+    print("-" * 62)
+    if not records:
+        print("  表为空。登记一台：")
+        print("    python scripts/db.py returns-set --sku purifier_desk_1752 \\")
+        print("        --name '空气净化器' --baseline 0.126 --stress 0.17 \\")
+        print("        --evidence backend_read --source-note '后台路径' \\")
+        print("        --effective-date 2026-11-16")
+        return 0
+
+    for record in records:
+        gap = f"+{record.rate_gap_pts:.1f} 个点"
+        print(
+            f"  {record.sku_key}　{record.product_name}"
+            f"　{record.baseline_rate:.2%} → {record.stress_rate:.2%}（{gap}）"
+        )
+        asin = f"　ASIN {record.asin}" if record.asin else ""
+        print(f"    证据：{record.evidence_label}{asin}　状态 {record.status}")
+        if record.source_note:
+            print(f"    来源：{_clip(record.source_note, 96)}")
+        if record.missing_evidence:
+            print(f"    还差：{'、'.join(record.missing_evidence)}")
+
+    print()
+    print(
+        f"  合计 {cov['total']} 台：可对外称已核实 {cov['usable']}、"
+        f"verified 状态 {cov['verified']}、借类目阈值 {cov['threshold']}、"
+        f"假设 {cov['estimate']}"
+    )
+    if cov["pending_keys"]:
+        print(f"  待补证据：{'、'.join(cov['pending_keys'])}")
+    print("  口径：两档都进库，压测不再靠命令行临时传数（docs/04 §25、§28.6）")
+    return 0
+
+
+def _dump_returns_set(conn, args) -> int:
+    """写入一台的两档。CHECK 是唯一防线，这里只把报错翻成人话。"""
+    if not _need_product_returns(conn):
+        return 2
+    try:
+        record = returns_db.upsert(
+            conn,
+            sku_key=args.sku,
+            product_name=args.name,
+            baseline_rate=args.baseline,
+            stress_rate=args.stress,
+            category=args.category,
+            asin=args.asin,
+            evidence_kind=args.evidence,
+            source_note=args.source_note,
+            effective_date=args.effective_date,
+            verified_at=args.verified_at,
+            status=args.status,
+            note=args.note,
+            marketplace=args.market,
+        )
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        print(f"[写入失败] {exc}")
+        print("  两档必须满足：0 ≤ 基线 < 压力 < 100%；estimate 不许 verified；")
+        print("  verified 需要 来源 + 读数日期 + 核实日期 三项齐全。")
+        return 2
+    print(
+        f"已登记 {record.sku_key}（{record.marketplace}）："
+        f"{record.baseline_rate:.2%} → {record.stress_rate:.2%}"
+        f"　{record.evidence_label}　{record.status}"
+    )
+    if record.missing_evidence:
+        print(f"  还差：{'、'.join(record.missing_evidence)}")
+    return 0
+
+
+def _resolve_returns(args, conn):
+    """把「显式参数 / product_returns 表 / 默认值」收成一个口径。
+
+    优先级：显式参数 > 表 > `DEFAULT_RETURNS`。
+
+    为什么要标来源：退货率是唯一一个「两个同样的数、来源不同、可信度差一档」
+    的参数。净化器 12.6% 是后台类目阈值（读来的、偏保守），咖啡机 8% 是假设。
+    输出里不标，报告就会把「假设 8%」写成「退货率 8%」——
+    这是本项目最容易发生、也最难被发现的一类错。
+
+    返回 (基线, 压力档, 来源说明行, 表记录)。
+    """
+    record = None
+    if getattr(args, "sku", None):
+        if conn is None:
+            raise RuntimeError("--sku 需要数据库连接")
+        record = returns_db.require(conn, args.sku)
+
+    from_cli = args.returns is not None
+    baseline = (
+        args.returns
+        if from_cli
+        else (record.baseline_rate if record is not None else admission.DEFAULT_RETURNS)
+    )
+    stress = (
+        args.stress_returns
+        if args.stress_returns is not None
+        else (record.stress_rate if record is not None else None)
+    )
+
+    parts: list[str] = []
+    if record is not None:
+        parts.append(
+            f"{record.sku_key}｜{record.evidence_label}"
+            f"（{'库' if not from_cli else '--returns 覆盖库值'}）"
+        )
+    elif from_cli:
+        parts.append("--returns 指定")
+    else:
+        parts.append("默认 8%（未登记这台，按假设算）")
+    if args.stress_returns is not None:
+        parts.append("压力档由 --stress-returns 指定")
+    elif record is not None:
+        parts.append("压力档取自库")
+    return baseline, stress, "；".join(parts), record
+
+
+def _dump_screen(args, conn=None) -> int:
+    """候选准入。不给 `--sku` 时完全不碰数据库：缺口与目标价都是纯计算。
 
     两道闸刻意都打印：闸一是粗筛（只看售价带），闸二是真算。
     两者结论相反时以闸二为准，并在下面用 `!` 标出来——否则读的人会挑爱听的那个。
     """
+    if conn is not None and not _need_product_returns(conn):
+        return 2
+    try:
+        baseline, stress_rate, origin, record = _resolve_returns(args, conn)
+    except AppError as exc:
+        print(f"[退货率缺失] {exc.message}")
+        if exc.detail:
+            print(f"  {exc.detail}")
+        return 2
+
+    name = args.name
+    if record is not None and name == "candidate":
+        name = record.product_name
+
     candidate = admission.Candidate(
-        name=args.name,
+        name=name,
         selling_price=args.price,
         quoted_cost=args.cogs,
         duty_rate=args.duty,
@@ -628,7 +794,7 @@ def _dump_screen(args) -> int:
         fba_ratio=args.fba_ratio,
         inbound_freight=args.freight,
         referral_rate=args.referral,
-        return_rate=args.returns,
+        return_rate=baseline,
         incoterm=args.incoterm,
     )
     try:
@@ -649,6 +815,7 @@ def _dump_screen(args) -> int:
         f"  售价 {money(args.price)}　采购 {money(args.cogs)}　关税 {duty}"
         f"　FBA {fba}　头程 ${args.freight:.2f}"
     )
+    print(f"  退货率：基线 {baseline:.2%}　来源 {origin}")
 
     if result.gate is not None:
         gate = result.gate
@@ -704,9 +871,9 @@ def _dump_screen(args) -> int:
                     "广告投不出量（`docs/04` §10.4 / §15.5 同一口径）"
                 )
     stress = None
-    if args.stress_returns is not None:
+    if stress_rate is not None:
         try:
-            stress = admission.stress_test(candidate, args.stress_returns)
+            stress = admission.stress_test(candidate, stress_rate)
         except admission.AdmissionInputInvalid as exc:
             print(f"[压测不成立] {exc}")
             return 2
@@ -722,7 +889,7 @@ def _dump_screen(args) -> int:
 
     print()
     print(
-        f"  口径：佣金 {args.referral:.0%} / 退货率 {args.returns:.0%} / "
+        f"  口径：佣金 {args.referral:.0%} / 退货率 {baseline:.1%} / "
         f"头程 ${args.freight:.2f}——三项未全部核实（H1 / H3 / H15）。"
     )
     print("  对外引用这个结论时，必须连这三个前提一起写。")
@@ -958,6 +1125,34 @@ def main(argv: list[str] | None = None) -> int:
     fba_parser = sub.add_parser("fba", help="FBA 费率维表覆盖率与缺口")
     fba_parser.add_argument("--market", default="US")
 
+    ret_parser = sub.add_parser(
+        "returns", help="逐 SKU 退货率台账：两档 + 证据强弱 + 还差什么"
+    )
+    ret_parser.add_argument("--market", default=None,
+                            help="只看一个市场，默认全部")
+
+    ret_set = sub.add_parser(
+        "returns-set", help="登记一台的两档退货率（写入 product_returns）"
+    )
+    ret_set.add_argument("--sku", required=True, help="内部稳定键，如 purifier_desk_1752")
+    ret_set.add_argument("--name", required=True, help="品名（输出用）")
+    ret_set.add_argument("--baseline", type=float, required=True, help="基线退货率，如 0.126")
+    ret_set.add_argument("--stress", type=float, required=True,
+                         help="压力档退货率，必须严格高于基线，如 0.17")
+    ret_set.add_argument("--market", default=returns_db.DEFAULT_MARKET)
+    ret_set.add_argument("--category", default=None, help="taxonomy category key")
+    ret_set.add_argument("--asin", default=None, help="10 位 ASIN（可空）")
+    ret_set.add_argument("--evidence", choices=returns_db.EVIDENCE_KINDS,
+                         default="estimate",
+                         help="backend_read=本 SKU 后台读数 / official_page=官方页面 "
+                              "/ category_threshold=借类目阈值 / estimate=假设（默认）")
+    ret_set.add_argument("--source-note", default=None,
+                         help="后台路径 + 读到的是什么。verified 必填")
+    ret_set.add_argument("--effective-date", default=None, help="读数/生效日期 YYYY-MM-DD")
+    ret_set.add_argument("--verified-at", default=None, help="核实日期 YYYY-MM-DD")
+    ret_set.add_argument("--status", choices=("draft", "verified"), default="draft")
+    ret_set.add_argument("--note", default=None)
+
     env_parser = sub.add_parser(
         "fba-envelope", help="没有真实尺寸重量时，FBA 费能确定到什么范围"
     )
@@ -1029,11 +1224,16 @@ def main(argv: list[str] | None = None) -> int:
                             help="头程（$/件），默认 6.00")
     scr_parser.add_argument("--referral", type=float, default=admission.DEFAULT_REFERRAL,
                             help="佣金比例，默认 0.15（H1 未核实前用这个口径）")
-    scr_parser.add_argument("--returns", type=float, default=admission.DEFAULT_RETURNS,
-                            help="退货率（基线档），默认 0.08（H3 未核实前用这个口径）")
+    scr_parser.add_argument("--returns", type=float, default=None,
+                            help="基线退货率。不给则：有 --sku 取库里的值，"
+                                 "没有则用默认 0.08（H3 未核实前口径）")
     scr_parser.add_argument("--stress-returns", type=float, default=None,
-                            help="压测档退货率（如 0.17）。给了就一起算两档，"
+                            help="压测档退货率（如 0.17）。不给则：有 --sku 取库里的值，"
+                                 "没有则不压测。给了就一起算两档，"
                                  "按「两档都为正才值得谈」出判定（docs/04 §25）")
+    scr_parser.add_argument("--sku", default=None,
+                            help="从 product_returns 表取两档退货率（如 purifier_desk_1752）。"
+                                 "显式传 --returns/--stress-returns 会覆盖库值并在输出里标出")
     scr_parser.add_argument("--incoterm", default="FOB",
                             choices=("FOB", "DDP"), help="默认 FOB")
 
@@ -1102,6 +1302,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.price is None:
             print("[输入不成立] 单台模式需要 --price；批量请用 --csv <文件>")
             return 2
+        if args.sku:
+            # 只有 --sku 这条路径要读库；其余仍是不碰库的纯计算。
+            conn = connect(args.db or resolve_path(None))
+            try:
+                return _dump_screen(args, conn)
+            finally:
+                conn.close()
         return _dump_screen(args)
 
     if args.db:
@@ -1116,6 +1323,10 @@ def main(argv: list[str] | None = None) -> int:
             return _dump_params(conn)
         if args.command == "fba":
             return _dump_fba(conn, args.market)
+        if args.command == "returns":
+            return _dump_returns(conn, args.market)
+        if args.command == "returns-set":
+            return _dump_returns_set(conn, args)
         if args.command == "fba-envelope":
             return _dump_envelope(conn, args)
         if args.command == "fba-profile":

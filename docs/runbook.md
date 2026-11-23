@@ -2,7 +2,7 @@
 
 > 用途：出问题时按「症状 → 一条命令 → 原因 → 处置」走，不靠回忆。
 > 对应验收项：`docs/02` P4-4。所有命令都实跑过；写进来但没跑过的命令要标明。
-> 最后核对：2026-11-23（schema v13，门禁 728 条）。
+> 最后核对：2026-11-23 18:38（schema v14，门禁 747 条）。
 
 ## 0. 三个运维端点，别混用
 
@@ -204,9 +204,14 @@ python scripts/jobs.py show <job_id>
 | --- | --- | --- | --- |
 | `param_unverified` | 503 | 结论依赖的参数还没核实到官方来源 | `make db-params` 看缺哪项；补齐来源与生效日期后升 `verified` |
 | `param_out_of_range` | 422 | 参数已核实，但本次取值落在它声明的适用区间外 | 补该区间的参数，或换口径；重试同样请求不会变好 |
+| `return_rate_missing` | 503 | 这一台没有登记两档退货率（`product_returns` 里没有这一行） | `make db-returns` 看已登记的 key；用 `returns-set` 补两档 |
 
-**不合并这两个码的理由**：「没查到」和「查到了但不管用」需要的动作完全不同。合成一个，
-后者会被当成「再多找找就能解决」，白花时间。
+**不合并这三个码的理由**：「没查到」「查到了但不管用」「这一台根本没登记」需要的动作完全不同。
+合成一个，第二种会被当成「再多找找就能解决」，第三种会被当成「参数库不完整」，都白花时间。
+
+**`return_rate_missing` 只拦「没有这一行」，不拦 draft 行。** 退货率天然难核实
+（后台只给类目阈值，真实 ASIN 均值要导报表），拒答 draft 会让压测整体无法进行。
+证据强弱随结论一起输出，`make db-returns` 里逐台标着「类目阈值 / 假设」。
 
 **503 而非 500 的理由**：语义是「依赖未就绪」，补齐参数即可恢复，不是服务内部坏了。
 
@@ -339,7 +344,7 @@ python scripts/db.py up     # 建库并升到最新版本；smoke 会自建临�
 python scripts/smoke.py     # 17/17
 ```
 
-### 13.2 2026-11-23 实测记录（`git clone` 到空目录 + 全新 venv）
+### 13.2 2026-11-23 实测记录（`git clone` 到空目录 + 全新 venv；当时 v13）
 
 | 环节 | 结果 |
 | --- | --- |
@@ -404,6 +409,7 @@ PYTEST_ADDOPTS="--basetemp=/tmp/pytest-xbi" make check
 | `idempotency_conflict` | 409 | 同键不同请求体 | 换键重新提交（§6） |
 | `param_unverified` | 503 | 参数未核实到官方来源 | `make db-params`（§7） |
 | `param_out_of_range` | 422 | 取值落在参数适用区间外 | 补该区间的参数（§7） |
+| `return_rate_missing` | 503 | 这台还没登记两档退货率 | `make db-returns` 看已登记的 key；`returns-set` 补（§7） |
 | `db_not_ready` | 503 | 库未初始化或结构落后 | `make db-up`（§3.1） |
 | `unauthorized` | 401 | 键缺失 / 无效 / 已吊销 | `make keys`（§4） |
 | `rate_limited` | 429 | 单位时间请求过多 | 按 `Retry-After` 退避（§4） |

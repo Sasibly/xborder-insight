@@ -28,6 +28,8 @@ SUBCOMMANDS = (
     "status",
     "roundtrip",
     "params",
+    "returns",
+    "returns-set",
     "fba",
     "fba-envelope",
     "transport",

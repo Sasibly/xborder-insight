@@ -41,8 +41,12 @@
 
 - **判定规则进代码**：两档都为正才谈（`admission.stress_test`，CLI `--stress-returns`）。
   门槛取 0 不取 15%——基线不达标才需要谈价，门槛定 15% 会把所有候选挡在门外。
-- **逐 SKU 退货率不落库**：`cost_params` 只有全局 `returns` 一行，现在只能靠命令行传，
-  对 API 与 `make check` 不生效。要生效得加 `product_returns` 表，未做（别以为已经进库了）。
+- **逐 SKU 退货率已进库（v14 `product_returns`）**：净化器 12.6→17、咖啡机 8→15，
+  `screen --sku` 取值，`tests/test_product_returns.py` 跑真实两档。
+  唯一键是内部 `sku_key`（不是 ASIN——只有咖啡机有 ASIN），ASIN 可空。
+  证据四档：`backend_read`/`official_page` 可升 verified，`category_threshold`/`estimate`
+  由 CHECK 永久挡在 draft（净化器是前者：读到的是类目阈值，不是该 ASIN 均值）。
+  **仍欠 API**：决策接口只读 `cost_params.returns.rate`，别以为已在线生效。
 - **FOB 公允参考价是内部锚**：只用来判断对方报价离不离谱，**绝不对供应商说出口**。
   开口价 = max(20% 线, 公允 × 0.85)——低于公允 15% 以上的报价不会被当回事。
   20% 线单独用会给出「没人理的开价」（净化器 $20.89 = 公允 −25.4%）。
@@ -78,10 +82,12 @@
 
 ## 结构现状（易忘）
 
-- 迁移已到 **v12**；`db.py roundtrip` 是「up→down→up 指纹一致」的硬门槛。
+- 迁移已到 **v14**（v14 = `product_returns`）；`db.py roundtrip` 是「up→down→up 指纹一致」的硬门槛。
   改 CHECK 只能重建表，且必须按 m0010 的手法「先改名挪走、再逐字建表」——
   直接 CREATE+rename 会让 sqlite_master 的 DDL 带双引号，指纹与未升级库对不上。
-- 新增业务表必须同步 `tests/test_migrations.py` 的 `BUSINESS_TABLES`（现含 `fba_rate_version`）。
+- 新增业务表必须同步两处：`tests/test_migrations.py` 的 `BUSINESS_TABLES`
+  （现含 `fba_rate_version` / `product_returns`）与 `tests/test_cli_help.py` 的 `SUBCOMMANDS`
+  （新增子命令不同步，那条一致性用例会红）。
 - 表级 `CHECK` **不能跨行查询**，所以区间重叠只能靠 `audit()` 检出，别假装数据库能拦。
 - FBA 费率已版本化（m0010/m0011）：`fba_rate_version`（生效区间）+ `fba_fee_schedule`
   （version_key / size_tier / product_class / weight / price_band）。行上**不再存** season 与

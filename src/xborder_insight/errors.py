@@ -97,6 +97,22 @@ class ParamOutOfRange(AppError):
     status_code = 422
 
 
+class ReturnRateMissing(AppError):
+    """要压测的这一台没有登记退货率。
+
+    与 `ParamUnverified` 分开：那一个是「有这一行、但没核实」，
+    这里是「根本没有这一行」。前者去补来源，后者去登记两档——
+    动作不同，合成一个码会让「补来源」被当成「多找找就有的」，
+    而实际上什么都不会变。
+
+    注意 draft 行**不**报这个错：退货率天然难核实，拒答会让压测无法进行。
+    证据强弱随结果一起输出（见 `db.product_returns.ProductReturn.usable`）。
+    """
+
+    code = "return_rate_missing"
+    status_code = 503
+
+
 class DbNotReady(AppError):
     """数据库还没初始化（未执行迁移）。
 
