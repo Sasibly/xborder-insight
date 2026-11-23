@@ -573,3 +573,63 @@ def test_only_one_sku_crosses_when_referral_drops_to_8pct(fees):
         if margin >= 0.15:
             passed.append(key)
     assert passed == ["coffee_machine"]
+
+
+# --- §18.7 下一批候选的闸：$18.3 在哪些价位成立 -------------------------------
+
+def _pmin_for_cogs(cogs, fba, duty, target=0.15):
+    """采购价给定，解最低可行售价（闭式解，售价 < $166.67 时与模型逐分一致）。"""
+    a = 1 + duty + RETURNS * 0.30
+    fixed = 1.016 * FREIGHT + 0.24
+    return (cogs * a + fixed + fba) / (1 - REFERRAL - RETURNS - 0.0024 - target)
+
+
+@pytest.mark.parametrize(
+    ("fba", "duty", "price_needed"),
+    [
+        (8.95, 0.125, 58.80),   # 小号大件下限 —— §18.7 的 $59 那道线就是它
+        (10.86, 0.125, 61.89),  # 水壶档
+        (14.40, 0.125, 67.62),  # 咖啡机档
+        (23.84, 0.237, 86.22),  # 净化器 A + 23.7% 税
+    ],
+)
+def test_18_3_needs_this_much_price(fba, duty, price_needed):
+    """采购 $18.3 要卖到多少才够 15%——闸一的分段全由这张表推出来。
+
+    这也是「$18.3 不等于便宜」的证据：它要求售价 $53–86。把 $18.3 当成
+    「采购便宜的品」会放进一堆 $30–40 售价的候选，而那一档的上限只有 $1–12。
+    """
+    assert _pmin_for_cogs(18.30, fba, duty) == pytest.approx(price_needed, abs=0.02)
+
+
+def test_18_3_is_loose_below_56_and_tight_above(fees):
+    """$56 是 $18.3 的分界线：以下比数学上限宽 2.5 倍，以上只有它的 0.23 倍。
+
+    这条守的是 §18.7 那张「宽严表」。若将来佣金或头程变了，分界点会移动，
+    闸的分段也必须跟着移动——所以这里钉的是比值，不是「$56」这个字面值。
+    """
+    def cap_at(price):
+        budget = ADMISSION_DENOMINATOR - (1.016 * FREIGHT + 0.24) / price
+        return (budget - 0.125) / (1 + 0.125 + RETURNS * 0.30) * price
+
+    assert 18.30 / cap_at(30.0) == pytest.approx(2.49, abs=0.02)
+    assert 18.30 / cap_at(200.0) == pytest.approx(0.23, abs=0.01)
+    # 分界点本身：$18.3 恰好等于该售价的上限
+    assert cap_at(56.0) == pytest.approx(18.30, abs=0.35)
+
+
+def test_active_price_candidate_that_the_gate_would_wrongly_kill():
+    """$80 售价、$20 采购、标准尺寸（FBA $8.09）正好 15%——但它会被 $18.3 砍掉。
+
+    这条是给闸一留的「误杀样本」：它证明 $18.3 只能做粗筛，
+    不能当准入判据。真要判，得走 §18.1 的不等式。
+    """
+    price, cogs, fba, duty = 80.0, 20.0, 8.09, 0.125
+    margin = (
+        ADMISSION_DENOMINATOR * price
+        - cogs * (1 + duty + RETURNS * 0.30)
+        - (1.016 * FREIGHT + 0.24)
+        - fba
+    ) / price
+    assert margin == pytest.approx(0.15, abs=5e-4)
+    assert cogs > 18.30  # 闸一会把它筛掉
