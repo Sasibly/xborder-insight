@@ -397,3 +397,26 @@ def test_coffee_box_shrink_moves_it_back_to_standard():
 
     # 换段之后 20% 线落回「15–25% 可谈区间」：这个杠杆的全部意义在这一条断言里
     assert (1 - boxed.max_cogs_ad_space / 18.50) < 0.25
+
+
+def test_purifier_oversized_box_still_passes_15_percent_at_24():
+    """箱子超标（FBA $14.00）时，$24.00 仍是 16.86%——能签，只是没广告空间。
+
+    「箱子没守住」推翻的是 $27.60，不是 $24.00。这两件事经常被合成一句
+    「价格得重议」，结果把 $1.29 的余地白让出去（签字线 $27.60 → $25.29）。
+    同理 $27.60 在超标口径下只有 11.69%，落笔即亏 3.31 个点。
+    """
+    result = adm.evaluate(_cand("air_purifier", 79.99, 24.00, 0.125, 14.00))
+
+    assert result.verdict == adm.VERDICT_PASS
+    assert result.gross_margin == pytest.approx(0.1686, abs=1e-4)
+    assert result.gross_margin >= adm.TARGET_MARGIN
+    assert result.gross_margin < adm.AD_SPACE_FLOOR
+
+    # 超标不是「整条线作废」，是整条下移约 $2.30
+    assert result.max_cogs == pytest.approx(25.30, abs=0.01)
+    assert result.max_cogs_ad_space == pytest.approx(21.82, abs=0.01)
+
+    at_signature = adm.evaluate(_cand("air_purifier", 79.99, 27.60, 0.125, 14.00))
+    assert at_signature.gross_margin == pytest.approx(0.1169, abs=1e-4)
+    assert at_signature.verdict != adm.VERDICT_PASS
