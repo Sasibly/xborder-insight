@@ -65,9 +65,29 @@ TARGET_MARGIN = 0.15
 AD_SPACE_FLOOR = 0.20
 
 #: 三个口径假设。改成 `verified` 之前，任何对外数字都要连这三个前提一起写。
+#:
+#: 它们**不是** `Candidate` 的字段默认值（H24，11-23 20:15 已收）。区别很重要：
+#: 字段默认值会让「没给」和「给了 6.00」在类型上无法区分，而这两件事在
+#: 谈判桌上差一个数量级——前者是「不知道」，后者是「假设 6.00 并接受」。
+#: 现在这里的三个数只被两处消费，两处都会把口径写进输出：
+#:   1. `scripts/db.py screen` 的入口层默认（缺 `--freight` / `--returns` 时用它，
+#:      并在结论下面标「默认」）；
+#:   2. `min_price_for_cogs()` 的闭式解（`GATE_AMOUNT_MIN_PRICE` = $59 由它反解，
+#:      那是个常量关系，不随运行时输入变）。
 DEFAULT_REFERRAL = 0.15
 DEFAULT_RETURNS = 0.08
 DEFAULT_FREIGHT = 6.00
+
+#: 缺了还能算、但只能算成上界的字段（H24）。
+#:
+#: 与 `duty_rate` 的区别不是「重要不重要」，是**能不能按 0 算**：
+#: 关税 0 本身是一个具体的归类结论（部分 HTS 免税），拿它当上界等于替调用方
+#: 做了归类；头程 0 与退货 0 只会让成本变低，按 0 算出来的数有明确含义——
+#: 「最乐观上界」。所以这两项缺了照样出毛利，只是结论降级并点名缺什么。
+SOFT_MISSING_HINTS: dict[str, str] = {
+    "inbound_freight": "头程运费（inbound_freight）——FOB/EXW 必须给；DDP 报价已含运费时不算缺",
+    "return_rate": "退货率（return_rate）——可用 `db.py screen --sku` 从 product_returns 表取",
+}
 
 #: 闸一的第一段：采购金额上限。来源是用户给定的筛法（`docs/07` 第 4 条），
 #: 它对应 `docs/04` §18.3 表里「$60 售价 × FBA 15% → $18.90」那一格。
@@ -92,9 +112,19 @@ class AdmissionInputInvalid(ValueError):
 class Candidate:
     """一个候选品的已知信息。**允许缺项**，缺什么由 `evaluate()` 报出来。
 
-    duty_rate 没有默认值：候选通常还没做 HTS 归类，但归类是判定的一部分，
-    猜一个税率会让结论静默偏乐观。要试算请显式传最坏档（如 0.237），
-    那样结论里会带上「按最坏税率」的前提。
+    缺项分两类，判法不同（H24）：
+
+    - **硬缺**（`duty_rate` / `selling_price` / `quoted_cost` / FBA）：判不了，
+      返回 NEED_INFO。`duty_rate` 没有默认值——候选通常还没做 HTS 归类，
+      而归类是判定的一部分，猜一个税率会让结论静默偏乐观。要试算请显式传
+      最坏档（如 0.237），那样结论里会带上「按最坏税率」的前提。
+    - **软缺**（`inbound_freight` / `return_rate`）：能算，但只能算成「上界」。
+      这两项按 0 计入，`evaluate()` 会把结论降级并**不给目标价**——
+      上界口径反解出来的采购上限偏高，拿去谈判必亏。
+
+    此前这两项有字段默认值（6.00 / 8%），于是「没给」与「给了 6.00」在类型上
+    无法区分，输出也看不出这一台是按假设算的。默认值现在只在入口层
+    （`db.py screen`）存在，并且必须打印出来。
     """
 
     name: str
@@ -103,9 +133,9 @@ class Candidate:
     duty_rate: float | None
     fba_fee: float | None = None
     fba_ratio: float | None = None
-    inbound_freight: float = DEFAULT_FREIGHT
+    inbound_freight: float | None = None
     referral_rate: float = DEFAULT_REFERRAL
-    return_rate: float = DEFAULT_RETURNS
+    return_rate: float | None = None
     incoterm: str = "FOB"
 
 
@@ -157,6 +187,16 @@ class Admission:
     @property
     def label(self) -> str:
         return VERDICT_LABELS[self.verdict]
+
+    @property
+    def upper_bound(self) -> bool:
+        """`gross_margin` 是上界而不是结论。
+
+        判据是「有毛利 + 有缺项」：硬缺（判不了）时毛利是 None，不算上界；
+        软缺时毛利有值但缺项非空（H24）。这条属性存在的唯一目的是让输出
+        层不必自己拼这两个条件——拼错一次就会在屏幕上把上界写成结论。
+        """
+        return self.gross_margin is not None and bool(self.missing)
 
 
 def _finite(name: str, value: float | None) -> float | None:
@@ -279,10 +319,15 @@ def _solve_min_price(
     return (low + high) / 2
 
 
-def _notes(gate: GateVerdict, margin: float) -> tuple[str, ...]:
-    """两道闸结论打架时要说明白谁说了算——否则读的人会挑自己爱听的那个。"""
+def _notes(gate: GateVerdict, margin: float, *, upper_bound: bool = False) -> tuple[str, ...]:
+    """两道闸结论打架时要说明白谁说了算——否则读的人会挑自己爱听的那个。
+
+    `upper_bound=True` 时不写「以闸二为准」（H24）：上界 ≥ 15% 不构成「闸二
+    有空间」，它只说明「在按 0 计成本的假设下够得着」。此时说「以闸二为准」，
+    读的人会把一台实际上做不成的候选（咖啡机 7.90%）记成能做。
+    """
     notes: list[str] = []
-    if gate.verdict == VERDICT_FAIL and margin >= TARGET_MARGIN:
+    if gate.verdict == VERDICT_FAIL and margin >= TARGET_MARGIN and not upper_bound:
         notes.append(
             "闸一判「做不成」但闸二判「有空间」：闸一只看售价带、不看尺寸段，"
             "这一台是它误杀——以闸二为准（`docs/04` §18.7 末尾那个样本）"
@@ -293,6 +338,61 @@ def _notes(gate: GateVerdict, margin: float) -> tuple[str, ...]:
             "直接看闸二；闸二也缺尺寸时先量箱规"
         )
     return tuple(notes)
+
+
+def _upper_bound_admission(
+    candidate: Candidate,
+    result: p.ProfitResult,
+    gate: GateVerdict,
+    soft: tuple[str, ...],
+    price: float,
+    cogs: float,
+) -> Admission:
+    """缺软项时的结论（H24）：毛利给上界，目标价一概不给。
+
+    为什么不给目标价：`max_cogs` 是「拿到供应商桌上说的数」。缺头程时按 0
+    反解出来的上限必然偏高——按上界去谈，等于把「不知道的成本」记成对方该让的价，
+    谈成的价一定亏。**给一个偏高的数比不给数危险得多**，所以这里返回 None，
+    让输出层显示「补上缺项再算」而不是一个漂亮的假价格。
+
+    为什么不给 PASS：六项成本只增不减 → 上界不达标则真实一定不达标（FAIL 保留，
+    连同「至少差几个点」），上界达标则真实值可能不达标（NEED_MORE_INFO）。
+    这条与 `decision.py` 对 API 的处理同构，两边用的是同一条单调性。
+    """
+    margin = result.gross_margin
+    labels = "、".join(p.FIELD_LABELS.get(name, name) for name in soft)
+    missing = tuple(SOFT_MISSING_HINTS[name] for name in soft)
+    if margin >= TARGET_MARGIN:
+        verdict = VERDICT_NEED_INFO
+        reason = (
+            f"上界毛利 {margin:.2%} ≥ 目标 {TARGET_MARGIN:.0%}，"
+            f"但{labels}未指定：按 0 计入得到的是最乐观上界，不能据此判定过线"
+        )
+        overrun = None
+    else:
+        verdict = VERDICT_FAIL
+        reason = (
+            f"上界毛利 {margin:.2%}，差至少 {(TARGET_MARGIN - margin) * 100:.2f} 个点"
+            f"（{labels}按 0 计入，真实只会更低）"
+        )
+        overrun = (TARGET_MARGIN - margin) * 100
+    return Admission(
+        name=candidate.name,
+        verdict=verdict,
+        reason=reason,
+        missing=missing,
+        gross_margin=margin,
+        gross_profit=result.gross_profit,
+        overrun_pts=overrun,
+        gate=gate,
+        notes=_notes(gate, margin, upper_bound=True)
+        + (
+            f"缺{labels} → 上界口径：目标价（max_cogs / min_price）不提供，"
+            "上界反解出来的上限偏高，拿去谈判必亏",
+        ),
+        selling_price=price,
+        quoted_cost=cogs,
+    )
 
 
 def evaluate(candidate: Candidate) -> Admission:
@@ -336,6 +436,14 @@ def evaluate(candidate: Candidate) -> Admission:
     result = _model(candidate, cogs, fba_fee)
     margin = result.gross_margin
     gate = screening_gate(price, cogs)
+
+    # 软缺：毛利能算，但只能是上界。**在这里就返回**，不再往下求目标价——
+    # 二分会用同一批「按 0 计入」的输入，解出来的上限比真实值高，
+    # 而它长得和正常结论一模一样（两把小数的美元数），没人会去想它是否含头程。
+    soft = tuple(name for name in result.missing_inputs if name in SOFT_MISSING_HINTS)
+    if soft:
+        return _upper_bound_admission(candidate, result, gate, soft, price, cogs)
+
     max_cogs = _solve_max_cogs(candidate, fba_fee)
     min_price = _solve_min_price(candidate, fba_fee)
     max_cogs_ad = _solve_max_cogs(candidate, fba_fee, AD_SPACE_FLOOR)
@@ -392,6 +500,11 @@ def min_price_for_cogs(cogs: float, fba_fee: float, duty_rate: float) -> float:
 
     只在售价 < $166.67 时与模型逐分一致（退款管理费 $5 封顶见 `docs/04` §18.1）。
     闸一的 `GATE_AMOUNT_MIN_PRICE` 就是用它反解出来的，所以函数与常量互为校验。
+
+    这里用 `DEFAULT_FREIGHT` / `DEFAULT_RETURNS` 是**故意的**（H24 也没改它）：
+    `GATE_AMOUNT_MIN_PRICE = 59` 是这两个口径假设下反解出的常量关系，
+    换算一次就固定了。它不是运行时的字段默认值——`Candidate` 已经不带默认值，
+    这个函数则是「在 6.00 / 8% 口径下，$18.30 的采购至少需要多少售价」的闭式答案。
     """
     a = 1 + duty_rate + DEFAULT_RETURNS * 0.30
     fixed = 1.016 * DEFAULT_FREIGHT + 0.24
@@ -633,8 +746,20 @@ def stress_test(candidate: Candidate, stress_returns: float) -> StressResult:
     压力档必须高于基线——反着传大概率是把两个参数写倒了，
     静默按「压力档 = 基线」算会得到一条永远为正的结论。
     """
+    if candidate.return_rate is None:
+        raise AdmissionInputInvalid(
+            "压测需要基线退货率：Candidate.return_rate 未指定"
+            "（用 `screen --sku` 从库里取，或显式传 --returns）"
+        )
     base = evaluate(candidate)
     stressed = evaluate(replace(candidate, return_rate=stress_returns))
+    # 上界口径下不能压测：退货的「头程沉没」一项按 0 算，两档差值会被低估，
+    # 而那个差值正是「退货风险值多少钱」的唯一依据（`docs/04` §25）。
+    if base.upper_bound or stressed.upper_bound:
+        raise AdmissionInputInvalid(
+            "压测需要完整口径：头程或退货率缺项时两档毛利都是上界，"
+            "两档差值会被低估；补齐缺项后再压测"
+        )
     if base.gross_margin is None or stressed.gross_margin is None:
         raise AdmissionInputInvalid(
             "压测需要完整输入（两档毛利都算得出来）；缺项请先补齐，不会用默认值代替"

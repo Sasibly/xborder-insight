@@ -18,10 +18,13 @@
     python scripts/db.py fba-export          # 导出 402 格逐格复核表（只读库）
     python scripts/db.py fba-review --in data/review/fba_rates_2026-11-21.csv
                                              # 回收复核结论并对账（只读库）
-    python scripts/db.py screen --price 63.99 --cogs 18.50 --duty 0.237 --fba 14.40
+    python scripts/db.py screen --price 63.99 --cogs 18.50 --duty 0.237 --fba 14.40 \\
+        --freight 6.00 --returns 0.08
                                              # 候选准入：这道品在 15% 线下还剩多少空间
+                                             # 口径参数不给就真的不猜：毛利降级为上界，
+                                             # 结论停在「还判不了」且不给目标价（H24）
     python scripts/db.py screen --sku purifier_desk_1752 --price 79.99 \\
-        --cogs 24.30 --duty 0.125 --fba 11.35
+        --cogs 24.30 --duty 0.125 --fba 11.35 --freight 6.00
                                              # 两档退货率从 product_returns 取，自动压测
     python scripts/db.py screen --csv data/candidates/example.csv
                                              # 批量：一张候选表进，三组结论出
@@ -38,6 +41,7 @@ import sqlite3
 import sys
 import tempfile
 import unicodedata
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -719,14 +723,18 @@ def _dump_returns_set(conn, args) -> int:
 
 
 def _resolve_returns(args, conn):
-    """把「显式参数 / product_returns 表 / 默认值」收成一个口径。
+    """把「显式参数 / product_returns 表 / 未指定」收成一个口径。
 
-    优先级：显式参数 > 表 > `DEFAULT_RETURNS`。
+    优先级：显式参数 > 表 > **未指定**（返回 None）。
 
-    为什么要标来源：退货率是唯一一个「两个同样的数、来源不同、可信度差一档」
-    的参数。净化器 12.6% 是后台类目阈值（读来的、偏保守），咖啡机 8% 是假设。
-    输出里不标，报告就会把「假设 8%」写成「退货率 8%」——
-    这是本项目最容易发生、也最难被发现的一类错。
+    为什么没有第三档默认 8%（H24，11-23 20:15）：`duty_rate` 在 CLI 里也没有
+    默认值——缺了就是 NEED_INFO，理由是「猜一个税率会让结论静默偏乐观」。
+    退货率与它同类，凭什么一个有默认一个没有？留着 8% 等于在最常走的入口上
+    保留同一个洞，只是在旁边写一行「这是假设」，而读的人只记结论那个百分比。
+
+    未指定时 `evaluate()` 会把结论降级成「上界」并关掉目标价，见
+    `admission._upper_bound_admission`。要给值有两条路：`--sku`（库里的两档）
+    或 `--returns`（显式声明）。
 
     返回 (基线, 压力档, 来源说明行, 表记录)。
     """
@@ -737,11 +745,12 @@ def _resolve_returns(args, conn):
         record = returns_db.require(conn, args.sku)
 
     from_cli = args.returns is not None
-    baseline = (
-        args.returns
-        if from_cli
-        else (record.baseline_rate if record is not None else admission.DEFAULT_RETURNS)
-    )
+    if from_cli:
+        baseline = args.returns
+    elif record is not None:
+        baseline = record.baseline_rate
+    else:
+        baseline = None
     stress = (
         args.stress_returns
         if args.stress_returns is not None
@@ -757,7 +766,7 @@ def _resolve_returns(args, conn):
     elif from_cli:
         parts.append("--returns 指定")
     else:
-        parts.append("默认 8%（未登记这台，按假设算）")
+        parts.append("未指定（可用 --sku 取库值，或 --returns 指定）")
     if args.stress_returns is not None:
         parts.append("压力档由 --stress-returns 指定")
     elif record is not None:
@@ -785,6 +794,20 @@ def _dump_screen(args, conn=None) -> int:
     if record is not None and name == "candidate":
         name = record.product_name
 
+    # 口径参数一律「不替我猜」（H24）：不给就真的当没给，让它缺进
+    # `Candidate`，由 `evaluate()` 降级成上界。这里不再补 6.00 / 8% 的默认值——
+    # 上一版在入口层补默认值、只在旁边打印一行「这是假设」，等于把 §31 那个洞
+    # 从模型层搬到了 CLI 层，而屏幕上读的人只记结论那个百分比。
+    freight = args.freight
+    referral = (
+        args.referral if args.referral is not None else admission.DEFAULT_REFERRAL
+    )
+    referral_origin = (
+        "--referral 指定"
+        if args.referral is not None
+        else f"默认 {admission.DEFAULT_REFERRAL:.0%}（H1 已读到 15%）"
+    )
+
     candidate = admission.Candidate(
         name=name,
         selling_price=args.price,
@@ -792,8 +815,8 @@ def _dump_screen(args, conn=None) -> int:
         duty_rate=args.duty,
         fba_fee=args.fba,
         fba_ratio=args.fba_ratio,
-        inbound_freight=args.freight,
-        referral_rate=args.referral,
+        inbound_freight=freight,
+        referral_rate=referral,
         return_rate=baseline,
         incoterm=args.incoterm,
     )
@@ -808,14 +831,15 @@ def _dump_screen(args, conn=None) -> int:
 
     duty = "未给" if args.duty is None else f"{args.duty:.1%}"
     fba = money(args.fba, "未给")
+    baseline_text = "未给" if baseline is None else f"{baseline:.2%}"
     print("候选准入（闸一 → 闸二）")
     print("-" * 62)
     print(f"  候选：{result.name}")
     print(
         f"  售价 {money(args.price)}　采购 {money(args.cogs)}　关税 {duty}"
-        f"　FBA {fba}　头程 ${args.freight:.2f}"
+        f"　FBA {fba}　头程 {money(freight, '未给')}"
     )
-    print(f"  退货率：基线 {baseline:.2%}　来源 {origin}")
+    print(f"  退货率：基线 {baseline_text}　来源 {origin}")
 
     if result.gate is not None:
         gate = result.gate
@@ -826,7 +850,15 @@ def _dump_screen(args, conn=None) -> int:
         print(f"    {gate.reason}")
 
     if result.verdict == admission.VERDICT_NEED_INFO:
-        print("  闸二：还判不了")
+        # 两种「还判不了」要分开说（H24）：
+        #   · 硬缺（售价/采购/关税/FBA）——连毛利都算不出来；
+        #   · 上界（缺头程/退货率）——毛利有值，但那是「其余按 0 计」的上界。
+        # 第二种以前会被默认值填掉，屏幕上完全看不出这一台是按假设算的。
+        if result.upper_bound:
+            print(f"  闸二：还判不了　毛利 {result.gross_margin:.2%} 是上界")
+            print("    六项成本只增不减 → 上界达标不等于达标，真实成本补上之前不能签字。")
+        else:
+            print("  闸二：还判不了")
         for item in result.missing:
             print(f"    · 缺 {item}")
         print("  补法：`docs/07` 里各项写着去哪儿取数；不会用默认值替你猜。")
@@ -837,8 +869,11 @@ def _dump_screen(args, conn=None) -> int:
     print(f"  闸二：{result.label}　毛利 {result.gross_margin:.2%}")
     if result.verdict == admission.VERDICT_FAIL:
         print(f"    {result.reason}")
-        print(f"    15% 线：采购必须 ≤ {money(result.max_cogs)}（现 {money(args.cogs)}）")
-        print(f"    15% 线：售价必须 ≥ {money(result.min_price)}（现 {money(args.price)}）")
+        if result.max_cogs is None:
+            print("    目标价不给：缺项按 0 反解出来的上限偏高，补上再算。")
+        else:
+            print(f"    15% 线：采购必须 ≤ {money(result.max_cogs)}（现 {money(args.cogs)}）")
+            print(f"    15% 线：售价必须 ≥ {money(result.min_price)}（现 {money(args.price)}）")
         print(
             f"    超预算 {result.overrun_pts:.2f} 个点 —— 与毛利缺口是同一个数"
             "（`docs/04` §18.2）"
@@ -888,11 +923,15 @@ def _dump_screen(args, conn=None) -> int:
         print(f"  ! {note}")
 
     print()
+    # 口径逐项标来源（H24）：读者需要的是「这一项是我给的还是程序给的」，
+    # 而不是一句「三项未全部核实」——那是概括，概括会被跳过。
     print(
-        f"  口径：佣金 {args.referral:.0%} / 退货率 {baseline:.1%} / "
-        f"头程 ${args.freight:.2f}——三项未全部核实（H1 / H3 / H15）。"
+        f"  口径：佣金 {referral:.0%}｜{referral_origin}"
+        f"　退货率 {baseline_text}｜{origin}"
+        f"　头程 {money(freight, '未给')}｜"
+        f"{'--freight 指定' if freight is not None else '未指定（H15 待核实）'}"
     )
-    print("  对外引用这个结论时，必须连这三个前提一起写。")
+    print("  对外引用这个结论时，必须连这三项口径一起写。")
 
     if result.verdict == admission.VERDICT_PASS:
         return 0
@@ -927,8 +966,23 @@ def _dump_screen_batch(args) -> int:
         print(f"[输入不成立] {exc}")
         return 2
 
+    # 批量模式没有逐台绑 --sku 的余地（一张表可能混好几个品类），所以两档口径
+    # 只能来自命令行或默认值。**必须显式注入**：`parse_rows` 产出的 `Candidate`
+    # 不带这两项（H24 之后模型层不猜），不注入的话整批都会变成「上界」。
+    freight = args.freight if args.freight is not None else admission.DEFAULT_FREIGHT
+    baseline = args.returns if args.returns is not None else admission.DEFAULT_RETURNS
+    referral = (
+        args.referral if args.referral is not None else admission.DEFAULT_REFERRAL
+    )
+
     results: list[admission.Admission] = []
     for candidate in candidates:
+        candidate = replace(
+            candidate,
+            inbound_freight=freight,
+            return_rate=baseline,
+            referral_rate=referral,
+        )
         try:
             results.append(admission.evaluate(candidate))
         except admission.AdmissionInputInvalid as exc:
@@ -950,10 +1004,12 @@ def _dump_screen_batch(args) -> int:
 
     for result in results:
         if result.verdict == admission.VERDICT_NEED_INFO:
-            margin = "—"
+            # 上界时毛利有值但结论是「判不了」：用 `+` 标出来，不要让读者
+            # 把 31.00%+ 记成 31.00%（`docs/04` §31 的「上界不得称 PASS」）。
+            margin = "—" if result.gross_margin is None else f"{result.gross_margin:.2%}+"
             cap = "—"
             drop = "—"
-            note = "缺：" + "、".join(
+            note = ("上界·" if result.upper_bound else "缺：") + "、".join(
                 item.split("（")[0].split(" ")[0] for item in result.missing[:2]
             )
         else:
@@ -992,9 +1048,16 @@ def _dump_screen_batch(args) -> int:
         print()
         print("  逐台细节（含所需售价与缺什么）：去掉 --csv，按行传 --price/--cogs/--duty/--fba")
         print(
-            f"  口径：佣金 {admission.DEFAULT_REFERRAL:.0%} / 退货率 "
-            f"{admission.DEFAULT_RETURNS:.0%} / 头程 ${admission.DEFAULT_FREIGHT:.2f}"
-            "——三项未全部核实（H1 / H3 / H15）"
+            f"  口径：佣金 {referral:.0%}｜"
+            f"{'指定' if args.referral is not None else f'默认 {admission.DEFAULT_REFERRAL:.0%}（H1 未核实）'}"
+            f"　退货率 {baseline:.1%}｜"
+            f"{'指定' if args.returns is not None else f'默认 {admission.DEFAULT_RETURNS:.0%}（H3 未核实）'}"
+            f"　头程 ${freight:.2f}｜"
+            f"{'指定' if args.freight is not None else f'默认 ${admission.DEFAULT_FREIGHT:.2f}（H15 未核实）'}"
+        )
+        print(
+            "  批量是**粗筛**口径：整批按下面这几项算（逐行给头程不现实），"
+            "进入谈判前用单台模式补全 --freight / --returns。"
         )
 
     if problems:
@@ -1220,13 +1283,14 @@ def main(argv: list[str] | None = None) -> int:
     scr_parser.add_argument("--fba", type=float, default=None, help="FBA 费（$/件）")
     scr_parser.add_argument("--fba-ratio", type=float, default=None,
                             help="FBA 占售价的典型比例（如 0.15）。与 --fba 二选一")
-    scr_parser.add_argument("--freight", type=float, default=admission.DEFAULT_FREIGHT,
-                            help="头程（$/件），默认 6.00")
-    scr_parser.add_argument("--referral", type=float, default=admission.DEFAULT_REFERRAL,
-                            help="佣金比例，默认 0.15（H1 未核实前用这个口径）")
+    scr_parser.add_argument("--freight", type=float, default=None,
+                            help="头程（$/件）。不给则不猜：毛利按 0 头程记为上界，"
+                                 "结论降级为「还判不了」且不给目标价（H24）")
+    scr_parser.add_argument("--referral", type=float, default=None,
+                            help="佣金比例。不给则用 0.15（H1 已读到 15%%，Home & Kitchen）")
     scr_parser.add_argument("--returns", type=float, default=None,
-                            help="基线退货率。不给则：有 --sku 取库里的值，"
-                                 "没有则用默认 0.08（H3 未核实前口径）")
+                            help="基线退货率。不给则：有 --sku 取库里的值；"
+                                 "都没有就是「未指定」，毛利降级为上界")
     scr_parser.add_argument("--stress-returns", type=float, default=None,
                             help="压测档退货率（如 0.17）。不给则：有 --sku 取库里的值，"
                                  "没有则不压测。给了就一起算两档，"

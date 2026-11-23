@@ -24,6 +24,11 @@ COFFEE = ("咖啡机", 63.99, 0.237, 14.40)
 
 
 def _cand(spec, cogs, returns, fba=None):
+    """§25 那批数字的前提：头程按 `DEFAULT_FREIGHT`（H24 之后要显式给）。
+
+    这些数就是「$6.00 头程 + 给两档退货率」下的毛利，头程不写就等于
+    按 0 算上界，`stress_test` 会直接拒绝（两档差值会被低估）。
+    """
     name, price, duty, default_fba = spec
     return adm.Candidate(
         name=name,
@@ -31,6 +36,7 @@ def _cand(spec, cogs, returns, fba=None):
         quoted_cost=cogs,
         duty_rate=duty,
         fba_fee=default_fba if fba is None else fba,
+        inbound_freight=adm.DEFAULT_FREIGHT,
         return_rate=returns,
     )
 

@@ -28,6 +28,15 @@ FIVE = [
 
 
 def _cand(name, price, cogs, duty, fba, **kw):
+    """五台共用的构造器，**口径显式写在这里**。
+
+    头程 $6.00 / 退货率 8% 是 §17 那批谈判数字的前提。H24 之前它们是
+    `Candidate` 的字段默认值，测试不写也能跑——于是「测试通过」同时意味着
+    「数字对」和「默认值没被改」，两件事分不开。现在模型层不给默认值：
+    改这两个数，本文件所有目标价会一起动，而不是悄悄动。
+    """
+    kw.setdefault("inbound_freight", adm.DEFAULT_FREIGHT)
+    kw.setdefault("return_rate", adm.DEFAULT_RETURNS)
     return adm.Candidate(
         name=name,
         selling_price=price,
@@ -121,7 +130,9 @@ def test_fba_ratio_is_a_valid_shortcut():
     """
     result = adm.evaluate(
         adm.Candidate(name="x", selling_price=59.99, quoted_cost=14.0,
-                      duty_rate=0.125, fba_ratio=0.15)
+                      duty_rate=0.125, fba_ratio=0.15,
+                      inbound_freight=adm.DEFAULT_FREIGHT,
+                      return_rate=adm.DEFAULT_RETURNS)
     )
     assert result.verdict == adm.VERDICT_PASS
     assert result.gross_margin == pytest.approx(0.2438, abs=1e-3)
@@ -420,3 +431,75 @@ def test_purifier_oversized_box_still_passes_15_percent_at_24():
     at_signature = adm.evaluate(_cand("air_purifier", 79.99, 27.60, 0.125, 14.00))
     assert at_signature.gross_margin == pytest.approx(0.1169, abs=1e-4)
     assert at_signature.verdict != adm.VERDICT_PASS
+
+
+# ---------- H24：软缺只能是上界，且不给目标价 -------------------------------
+#
+# 2026-11-23 20:15。`Candidate` 的 `inbound_freight` / `return_rate` 原来自带
+# 6.00 / 8%，于是「没给」与「给了 6.00」在类型上无法区分，输出上也看不出
+# 这一台是按假设算的。现在模型层不猜：缺了照算，但算出来的是上界，
+# 而且**不给目标价**——上界反解出来的采购上限偏高，按它开口必亏。
+
+
+def test_the_two_soft_fields_have_no_defaults():
+    """形状守卫：少给这两项时必须是 None，不许有人「顺手加回默认值」。
+
+    加回默认值不会让任何数字变错——它让「不知道」重新变得不可表达，
+    而那时 `upper_bound` 永远是 False，屏幕上再也分不出假设与实测。
+    """
+    candidate = adm.Candidate(
+        name="x", selling_price=59.99, quoted_cost=18.0, duty_rate=0.125, fba_fee=10.0
+    )
+    assert candidate.inbound_freight is None
+    assert candidate.return_rate is None
+
+
+def test_missing_soft_items_make_the_margin_an_upper_bound():
+    """咖啡机缺头程与退货率：上界 26.73%（≥15%）→ 判不了，且目标价一律不给。
+
+    对照同一条补齐 6.00 / 8% 之后是 7.90%（做不成）。上界把 19 个点全吃掉了，
+    这正是「上界不得称 PASS」要挡的东西——若不降级，这一台会被报成「有空间」，
+    而它的真身是五台里最差的一台。
+    """
+    ub = adm.evaluate(adm.Candidate("coffee", 63.99, 18.50, 0.237, fba_fee=14.40))
+    full = adm.evaluate(_cand("coffee", 63.99, 18.50, 0.237, 14.40))
+
+    assert ub.gross_margin == pytest.approx(0.2673, abs=1e-4)
+    assert ub.verdict == adm.VERDICT_NEED_INFO
+    assert ub.upper_bound is True
+    assert ub.max_cogs is None and ub.min_price is None
+    assert ub.max_cogs_ad_space is None and ub.min_price_ad_space is None
+    assert len(ub.missing) == 2
+
+    assert full.gross_margin == pytest.approx(0.0790, abs=1e-4)
+    assert full.verdict == adm.VERDICT_FAIL
+    assert full.upper_bound is False
+
+
+def test_upper_bound_that_fails_without_the_missing_items_stays_fail():
+    """上界都不达标 → FAIL 保留（采购 $26 时上界 12.24%）。
+
+    单调性给出这个方向：六项只增成本 → 上界不达标则真实一定不达标。
+    所以这类结论**不需要补数就能定论**，也正因如此才要保留 FAIL 而不是
+    一律降级——否则每台候选都得补全才能筛，批量入口就废了。
+    """
+    ub = adm.evaluate(adm.Candidate("coffee", 63.99, 26.00, 0.237, fba_fee=14.40))
+    assert ub.verdict == adm.VERDICT_FAIL
+    assert ub.upper_bound is True  # 结论是 FAIL，但毛利数字仍然是上界
+    assert ub.overrun_pts == pytest.approx(2.764, abs=1e-3)
+    assert ub.max_cogs is None  # 目标价照样不给
+
+
+def test_upper_bound_cannot_be_stress_tested():
+    """上界口径下压测必须拒绝：退货的「头程沉没」按 0 算，两档差值会被低估。
+
+    压测的全部价值是那个差值（「退货风险值多少钱」）。头程按 0 计入时
+    差值少算一块，而算出来的数照样是两把小数的百分比——没有痕迹。
+    """
+    with pytest.raises(adm.AdmissionInputInvalid, match="完整口径"):
+        adm.stress_test(
+            adm.Candidate(
+                "coffee", 63.99, 18.50, 0.237, fba_fee=14.40, return_rate=0.08
+            ),
+            0.15,
+        )
