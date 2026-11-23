@@ -127,6 +127,10 @@ class Admission:
     min_price: float | None = None
     gate: GateVerdict | None = None
     notes: tuple[str, ...] = ()
+    #: 原样带回输入的两个数。批量输出要显示它们，但 `Admission` 本身不该
+    #: 让调用方去别处找——那会逼着 CLI 再维护一份 name→输入 的映射。
+    selling_price: float | None = None
+    quoted_cost: float | None = None
 
     @property
     def label(self) -> str:
@@ -295,6 +299,8 @@ def evaluate(candidate: Candidate) -> Admission:
             reason="输入不全，判不了——补齐后再跑，不会用默认值替你猜",
             missing=tuple(missing),
             gate=screening_gate(price, cogs),
+            selling_price=price,
+            quoted_cost=cogs,
         )
 
     assert price is not None and cogs is not None and fba_fee is not None
@@ -318,6 +324,8 @@ def evaluate(candidate: Candidate) -> Admission:
             min_price=min_price,
             gate=gate,
             notes=_notes(gate, margin),
+            selling_price=price,
+            quoted_cost=cogs,
         )
 
     reduction = None
@@ -339,6 +347,8 @@ def evaluate(candidate: Candidate) -> Admission:
         min_price=min_price,
         gate=gate,
         notes=_notes(gate, margin),
+        selling_price=price,
+        quoted_cost=cogs,
     )
 
 
@@ -352,3 +362,110 @@ def min_price_for_cogs(cogs: float, fba_fee: float, duty_rate: float) -> float:
     fixed = 1.016 * DEFAULT_FREIGHT + 0.24
     denominator = 1 - DEFAULT_REFERRAL - DEFAULT_RETURNS - 0.0024 - TARGET_MARGIN
     return (cogs * a + fixed + fba_fee) / denominator
+
+
+# --- 批量导入：CSV → Candidate ------------------------------------------------
+#
+# 这一段的重点不是「读文件」，是**区分三种空**：
+#
+#   单元格留空      → None，交给 evaluate 判 need_info（「这个数我不知道」）
+#   单元格写了但解析不了 → 报格式错并跳过该行（「这个数写错了」）
+#   整列缺失        → 报列名错（「这张表结构不对」）
+#
+# 三者混同的后果：把一个写错的数当成「不知道」，批量筛完得到一片 need_info，
+# 看起来像数据没准备好，实际是表填错了——而 nobody 会去重看第二遍。
+
+#: 列名别名。左起第一个是规范名，其余是容忍写法（含中文，方便从文档直接粘贴）。
+COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("name", "sku", "候选", "名称", "型号"),
+    "selling_price": ("price", "selling_price", "售价"),
+    "quoted_cost": ("cogs", "quoted_cost", "采购价", "采购"),
+    "duty_rate": ("duty", "duty_rate", "关税", "税率"),
+    "fba_fee": ("fba", "fba_fee", "fba费"),
+    "fba_ratio": ("fba_ratio", "fba占比"),
+}
+
+REQUIRED_COLUMNS = ("selling_price", "quoted_cost")
+
+
+@dataclass(frozen=True)
+class RowProblem:
+    """一行的问题。`line` 用 CSV 的行号（含表头，从 1 数），方便直接跳过去改。"""
+
+    line: int
+    message: str
+
+
+def _normalize_header(name: str) -> str:
+    return name.strip().lower().replace(" ", "").replace("_", "")
+
+
+_CANONICAL: dict[str, str] = {}
+for _canon, _aliases in COLUMN_ALIASES.items():
+    for _alias in _aliases:
+        _CANONICAL[_normalize_header(_alias)] = _canon
+
+
+def _parse_cell_number(raw: str) -> float | None:
+    """把单元格转成数。空 → None；`$1,234.5` / `23.7%` 这类写法容忍。
+
+    `%` 一律按百分数转小数：关税列写 `23.7%` 与 `0.237` 是同一个意思，
+    两种都收——但 `23.7`（不带 %）会被当成 2370%，所以超过 1 的税率要带 %。
+    """
+    text = raw.strip()
+    if not text:
+        return None
+    text = text.replace(",", "").replace("$", "").replace("＄", "").replace("％", "%")
+    if text.endswith("%"):
+        return float(text[:-1]) / 100.0
+    return float(text)
+
+
+def parse_rows(rows: list[dict[str, str]]) -> tuple[list[Candidate], list[RowProblem]]:
+    """把 CSV 行（dict 列表）转成 Candidate，并把问题按行报出来。
+
+    列名大小写、下划线、空格都不敏感；`price`/`售价`/`selling_price` 等价。
+    缺列时抛 `AdmissionInputInvalid`——那是整张表的问题，不该逐行报。
+    """
+    if not rows:
+        return [], []
+
+    header_map: dict[str, str] = {}
+    # 遍历所有行的键而不是只看第一行：CSV 的 DictReader 保证列一致，
+    # 但调用方手工拼的 dict 列表未必，漏掉别的行独有的列会静默变成 None。
+    for key in {key for row in rows for key in row}:
+        canon = _CANONICAL.get(_normalize_header(key))
+        if canon is not None:
+            header_map[key] = canon
+
+    present = set(header_map.values())
+    missing_cols = [col for col in REQUIRED_COLUMNS if col not in present]
+    if missing_cols:
+        raise AdmissionInputInvalid(
+            "CSV 缺列：" + "、".join(missing_cols)
+            + "。至少要有 price 与 cogs 两列（也接受 售价 / 采购价 等写法）"
+        )
+
+    candidates: list[Candidate] = []
+    problems: list[RowProblem] = []
+    for index, row in enumerate(rows, start=2):  # 表头是第 1 行
+        mapped = {header_map[key]: value for key, value in row.items() if key in header_map}
+        try:
+            numbers = {
+                col: _parse_cell_number(mapped.get(col, "") or "")
+                for col in ("selling_price", "quoted_cost", "duty_rate", "fba_fee", "fba_ratio")
+            }
+        except ValueError as exc:
+            problems.append(RowProblem(index, f"数值格式错（{exc}）"))
+            continue
+        candidates.append(
+            Candidate(
+                name=(mapped.get("name") or f"row{index}").strip(),
+                selling_price=numbers["selling_price"],
+                quoted_cost=numbers["quoted_cost"],
+                duty_rate=numbers["duty_rate"],
+                fba_fee=numbers["fba_fee"],
+                fba_ratio=numbers["fba_ratio"],
+            )
+        )
+    return candidates, problems

@@ -15,6 +15,8 @@
                                              # 回收复核结论并对账（只读库）
     python scripts/db.py screen --price 63.99 --cogs 18.50 --duty 0.237 --fba 14.40
                                              # 候选准入：这道品在 15% 线下还剩多少空间
+    python scripts/db.py screen --csv data/candidates/example.csv
+                                             # 批量：一张候选表进，三组结论出
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -23,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 import tempfile
 import unicodedata
@@ -681,6 +684,113 @@ def _dump_screen(args) -> int:
     return 1
 
 
+_BATCH_ORDER = (
+    admission.VERDICT_PASS,
+    admission.VERDICT_NEED_INFO,
+    admission.VERDICT_FAIL,
+)
+
+
+def _dump_screen_batch(args) -> int:
+    """批量准入：一张候选表进，三组结论出。
+
+    排序按可行动性：有空间的先看（要接着谈）、还判不了的中间（要补数）、
+    做不成的最后（放弃即可）。组内保持 CSV 原序，方便对着表改。
+
+    一行格式错**不影响**其它行出结论，但会让退出码变成 2——因为这一批的
+    统计已经不可信了，而 CLI 的退出码是唯一能被脚本读到的地方。
+    """
+    path = Path(args.csv)
+    if not path.exists():
+        print(f"[输入不成立] 找不到候选表：{path}")
+        return 2
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    try:
+        candidates, problems = admission.parse_rows(rows)
+    except admission.AdmissionInputInvalid as exc:
+        print(f"[输入不成立] {exc}")
+        return 2
+
+    results: list[admission.Admission] = []
+    for candidate in candidates:
+        try:
+            results.append(admission.evaluate(candidate))
+        except admission.AdmissionInputInvalid as exc:
+            problems.append(admission.RowProblem(0, f"{candidate.name}：{exc}"))
+    results.sort(key=lambda item: _BATCH_ORDER.index(item.verdict))
+
+    print(f"候选准入（批量）　{path.name}　共 {len(rows)} 行")
+    print("-" * 96)
+    # 每列宽 = 内容宽 + 1：中文标签按显示宽度算正好占满时，
+    # 不加这一格会和下一列黏在一起（「还判不了no_duty」）。
+    header = (
+        _pad("结论", 9) + _pad("候选", 21) + _pad("售价", 10) + _pad("采购", 10)
+        + _pad("毛利", 9) + _pad("采购上限", 12) + _pad("需降", 8) + "备注"
+    )
+    print(header)
+
+    def money(value):
+        return "—" if value is None else f"${value:,.2f}"
+
+    for result in results:
+        if result.verdict == admission.VERDICT_NEED_INFO:
+            margin = "—"
+            cap = "—"
+            drop = "—"
+            note = "缺：" + "、".join(
+                item.split("（")[0].split(" ")[0] for item in result.missing[:2]
+            )
+        else:
+            margin = f"{result.gross_margin:.2%}"
+            cap = money(result.max_cogs)
+            drop = (
+                "—" if result.cogs_reduction_pct is None
+                else f"{result.cogs_reduction_pct:.1%}"
+            )
+            if result.verdict == admission.VERDICT_PASS:
+                note = "有空间"
+            else:
+                note = f"差 {result.overrun_pts:.1f} 点"
+        seller = money(result.selling_price)
+        cost = money(result.quoted_cost)
+        print(
+            _pad(result.label, 9) + _pad(result.name, 21) + _pad(seller, 10)
+            + _pad(cost, 10) + _pad(margin, 9) + _pad(cap, 12)
+            + _pad(drop, 8) + _clip(note, 30)
+        )
+
+    counts = {verdict: 0 for verdict in _BATCH_ORDER}
+    for result in results:
+        counts[result.verdict] += 1
+    print("-" * 96)
+    print(
+        f"  有空间 {counts[admission.VERDICT_PASS]} / "
+        f"还判不了 {counts[admission.VERDICT_NEED_INFO]} / "
+        f"做不成 {counts[admission.VERDICT_FAIL]}"
+        + (f"；{len(problems)} 行未计入（格式或输入问题）" if problems else "")
+    )
+    for problem in problems:
+        where = f"第 {problem.line} 行" if problem.line else "行"
+        print(f"  ! {where}：{problem.message}")
+    if results:
+        print()
+        print("  逐台细节（含所需售价与缺什么）：去掉 --csv，按行传 --price/--cogs/--duty/--fba")
+        print(
+            f"  口径：佣金 {admission.DEFAULT_REFERRAL:.0%} / 退货率 "
+            f"{admission.DEFAULT_RETURNS:.0%} / 头程 ${admission.DEFAULT_FREIGHT:.2f}"
+            "——三项未全部核实（H1 / H3 / H15）"
+        )
+
+    if problems:
+        return 2
+    if counts[admission.VERDICT_NEED_INFO]:
+        return 3
+    if counts[admission.VERDICT_FAIL]:
+        return 1
+    return 0
+
+
 def _export_path(args) -> Path:
     if args.out:
         return Path(args.out)
@@ -855,7 +965,9 @@ def main(argv: list[str] | None = None) -> int:
         help="候选准入：这个品在 15% 毛利线下还剩多少空间（闸一 + 闸二）",
     )
     scr_parser.add_argument("--name", default="candidate", help="候选名（输出用）")
-    scr_parser.add_argument("--price", type=float, required=True, help="售价（美元）")
+    scr_parser.add_argument("--price", type=float, default=None, help="售价（美元）")
+    scr_parser.add_argument("--csv", default=None,
+                            help="批量模式：候选表路径（列：name,price,cogs,duty,fba 或 fba_ratio）")
     scr_parser.add_argument("--cogs", type=float, default=None,
                             help="采购价（按 --incoterm 口径；默认 FOB）")
     scr_parser.add_argument("--duty", type=float, default=None,
@@ -929,6 +1041,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "screen":
         # 同样不碰库：准入只用到传入的四个数与几个口径常数。
+        if args.csv and args.price is not None:
+            print("[输入不成立] --csv 与 --price 不能同时给：批量与单台是两条路径")
+            return 2
+        if args.csv:
+            return _dump_screen_batch(args)
+        if args.price is None:
+            print("[输入不成立] 单台模式需要 --price；批量请用 --csv <文件>")
+            return 2
         return _dump_screen(args)
 
     if args.db:

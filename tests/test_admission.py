@@ -211,3 +211,66 @@ def test_overrun_equals_margin_gap():
         assert result.overrun_pts == pytest.approx(
             (adm.TARGET_MARGIN - result.gross_margin) * 100, abs=1e-9
         )
+
+
+# --- CSV 批量：三种「空」必须分开 -------------------------------------------
+
+def test_parse_rows_accepts_english_and_chinese_headers():
+    """列名不敏感：`price` / `售价`、`duty` / `税率`、`23.7%` / `0.237` 都收。
+
+    批量入口的输入是人手填的表，写法一定不统一。要求统一格式的结果是
+    大家回去手工改表，然后改错——不如在解析层容忍。
+    """
+    rows = [
+        {"name": "a", "price": "$63.99", "cogs": "18.50", "duty": "23.7%", "fba": "14.40"},
+        {"name": "b", "售价": "1,280.00", "采购价": "20", "税率": "0.125", "fba占比": "15%"},
+    ]
+    candidates, problems = adm.parse_rows(rows)
+    assert problems == []
+    assert candidates[0].selling_price == pytest.approx(63.99)
+    assert candidates[0].duty_rate == pytest.approx(0.237)
+    assert candidates[1].selling_price == pytest.approx(1280.0)
+    assert candidates[1].fba_ratio == pytest.approx(0.15)
+    assert candidates[1].duty_rate == pytest.approx(0.125)
+
+
+def test_empty_cell_is_unknown_not_an_error():
+    """空格 = 「我不知道」→ need_info；不是格式错。
+
+    两者混同的后果：一张表填错了几格，批量跑完得到一片 need_info，
+    看起来像数据没准备好，实际是表填错了——不会有人回头看第二遍。
+    """
+    rows = [{"name": "x", "price": "45", "cogs": "9", "duty": "", "fba": ""}]
+    candidates, problems = adm.parse_rows(rows)
+    assert problems == []
+    assert candidates[0].duty_rate is None
+    result = adm.evaluate(candidates[0])
+    assert result.verdict == adm.VERDICT_NEED_INFO
+
+
+def test_bad_number_is_reported_per_line_and_skipped():
+    """解析不了 → 报行号并跳过该行。行号按表格算（表头是第 1 行），改表时能直接定位。"""
+    rows = [
+        {"name": "ok", "price": "45", "cogs": "9"},
+        {"name": "bad", "price": "abc", "cogs": "9"},
+    ]
+    candidates, problems = adm.parse_rows(rows)
+    assert [c.name for c in candidates] == ["ok"]
+    assert len(problems) == 1
+    assert problems[0].line == 3
+    assert "数值格式错" in problems[0].message
+
+
+def test_missing_required_column_raises():
+    """整列缺失是表结构问题，抛错而不是逐行 need_info——否则会得到一片「还判不了」。"""
+    with pytest.raises(adm.AdmissionInputInvalid):
+        adm.parse_rows([{"name": "x", "cogs": "9"}])
+
+
+def test_explicit_fba_wins_over_ratio():
+    """同时给 fba 与 fba_ratio 时以 fba 为准：前者是量过的，后者是品类典型值。"""
+    result = adm.evaluate(
+        adm.Candidate(name="x", selling_price=59.99, quoted_cost=14.0,
+                      duty_rate=0.125, fba_fee=5.0, fba_ratio=0.30)
+    )
+    assert result.gross_margin > 0.25  # 用 0.30 占比（$18）时只有 9.4%
