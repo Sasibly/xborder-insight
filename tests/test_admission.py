@@ -372,3 +372,28 @@ def test_signature_line_27_60_is_inside_the_15_percent_line_only():
     result = adm.evaluate(_cand("air_purifier", 79.99, 27.60, 0.125, 11.35))
     assert result.gross_margin == pytest.approx(0.15, abs=1e-3)
     assert result.gross_margin < adm.AD_SPACE_FLOOR
+
+
+def test_coffee_box_shrink_moves_it_back_to_standard():
+    """咖啡机最短边 9.5 英寸 > 8 → 小号大件 $14.40；收到 8 英寸内 → 大号标准件 $11.85。
+
+    $18.50 的采购价一分不动，毛利 7.90% → 11.88%，两条线从 $14.90/$12.36
+    上移到 $16.92/$14.38。这是「不改单价」的杠杆（`docs/04` §23）：
+    20% 线的需降幅从 −33.2% 回到 −22.3%，也就是从「出局」回到「议价带内」。
+
+    两个 FBA 都由 `fba-envelope` 给出（§23.5 有命令），这里只钉结论——
+    重算会把费率表与准入测试绑死。
+    """
+    bulky = adm.evaluate(_cand("coffee", 63.99, 18.50, 0.237, 14.40))
+    boxed = adm.evaluate(_cand("coffee", 63.99, 18.50, 0.237, 11.85))
+
+    assert bulky.gross_margin == pytest.approx(0.0790, abs=1e-4)
+    assert boxed.gross_margin == pytest.approx(0.1188, abs=1e-4)
+
+    assert bulky.max_cogs == pytest.approx(14.90, abs=0.01)
+    assert boxed.max_cogs == pytest.approx(16.92, abs=0.01)
+    assert bulky.max_cogs_ad_space == pytest.approx(12.36, abs=0.01)
+    assert boxed.max_cogs_ad_space == pytest.approx(14.38, abs=0.01)
+
+    # 换段之后 20% 线落回「15–25% 可谈区间」：这个杠杆的全部意义在这一条断言里
+    assert (1 - boxed.max_cogs_ad_space / 18.50) < 0.25
