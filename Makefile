@@ -100,7 +100,7 @@ keys:
 key-revoke:
 >$(PY) scripts/keys.py revoke --prefix $(PREFIX)
 
-## smoke: 交付冒烟 = 临时库 + 临时端口 + 建密钥 + 提交任务 + 断言（15 项）
+## smoke: 交付冒烟 = 临时库 + 临时端口 + 建密钥 + 提交任务 + 断言（17 项）
 smoke:
 >$(PY) scripts/smoke.py
 
