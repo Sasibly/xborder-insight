@@ -346,3 +346,29 @@ def test_passing_15_percent_without_ad_space_is_flagged():
     assert result.gross_margin == pytest.approx(0.1874, abs=1e-4)
     assert result.gross_margin < adm.AD_SPACE_FLOOR
     assert result.max_cogs_ad_space == pytest.approx(24.12, abs=0.01)
+
+
+def test_purifier_opening_24_clears_both_lines():
+    """H22 拍板后的开口价 $24.00：两条线都过，余量只有 $0.12。
+
+    开口价翻过三次（$16.74 → $25.00 → $24.00），每次都是因为上一个锚点
+    回答了错的问题。这条把现行锚点钉住：改它必须同时改 `docs/07` H21 的
+    让步阶梯，否则文档与命令会说两个价。
+    """
+    result = adm.evaluate(_cand("air_purifier", 79.99, 24.00, 0.125, 11.35))
+    assert result.verdict == adm.VERDICT_PASS
+    assert result.gross_margin == pytest.approx(0.2018, abs=1e-4)
+    assert result.gross_margin >= adm.AD_SPACE_FLOOR
+    assert result.max_cogs_ad_space == pytest.approx(24.12, abs=0.01)
+    assert result.max_cogs_ad_space - 24.00 == pytest.approx(0.12, abs=0.01)
+
+
+def test_signature_line_27_60_is_inside_the_15_percent_line_only():
+    """签字线 $27.60 是 15% 线的上限：过 15%、不过 20%。
+
+    这一格是「签了也不投广告」的定义。若哪天有人把 $27.60 当开口价报出去，
+    谈成后 ACOS 上限就是 15.00%，比这条测试的断言还低——那时先红的是这条。
+    """
+    result = adm.evaluate(_cand("air_purifier", 79.99, 27.60, 0.125, 11.35))
+    assert result.gross_margin == pytest.approx(0.15, abs=1e-3)
+    assert result.gross_margin < adm.AD_SPACE_FLOOR
