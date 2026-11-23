@@ -2,7 +2,7 @@
 
 为什么这张表值得一组专门的用例：
     它是全项目唯一把「读来的数」和「猜的数」并排放在一张表里的地方。
-    净化器 12.6% 与咖啡机 8% 在算毛利时地位完全相同，可信度差一档；
+    净化器 12.6% 与咖啡机 10% 在算毛利时地位完全相同，可信度差一档；
     如果表结构与测试不区分，报告就会把假设写成事实——而报告是要拿去签字的。
 
 这组用例分三层：
@@ -36,9 +36,9 @@ def test_seed_rows_carry_the_documented_rates(conn):
     assert purifier.rate_gap_pts == pytest.approx(4.4, abs=0.05)
 
     coffee = pr.require(conn, COFFEE)
-    assert coffee.baseline_rate == pytest.approx(0.08)
-    assert coffee.stress_rate == pytest.approx(0.15)
-    assert coffee.rate_gap_pts == pytest.approx(7.0, abs=0.05)
+    assert coffee.baseline_rate == pytest.approx(0.10)
+    assert coffee.stress_rate == pytest.approx(0.14)
+    assert coffee.rate_gap_pts == pytest.approx(4.0, abs=0.05)
 
 
 def test_both_seed_rows_are_draft_for_different_reasons(conn):
@@ -248,9 +248,23 @@ def test_database_rates_reproduce_the_signed_margin(conn):
     assert result.worth_negotiating, "两档都为正才值得谈——这是 §25.1 的规则"
 
 
-def test_coffee_stress_can_flip_when_the_gap_is_seven_points(conn):
-    """咖啡机两档差 7 个点，压力档是否转负取决于箱规结论——
-    表只负责给数，判定交给 `stress_test`。这里钉住「数没被写反」。"""
+def test_coffee_gap_narrows_with_the_baseline_but_the_verdict_is_set_by_the_baseline(conn):
+    """咖啡机两档 10% → 14%（差 4 个点）。表只负责给数，判定交给 `stress_test`。
+
+    20:45 把基线从 8% 改成 10%、压力档从 15% 改成 14% 之后，两档差从 7 收窄到 4——
+    14% 不是独立读数，是随基线平移的情景值。所以这一台的风险不在压测翻转，
+    而在基线本身：$14.50 在 10% 下只有 13.45%，**还没走到压力档就已经出局**。
+    """
     record = pr.require(conn, COFFEE)
-    assert record.stress_rate - record.baseline_rate > 0
-    assert record.rate_gap_pts > pr.require(conn, PURIFIER).rate_gap_pts
+    assert record.stress_rate - record.baseline_rate == pytest.approx(0.04, abs=1e-6)
+
+    candidate = admission.Candidate(
+        name="coffee", selling_price=63.99, quoted_cost=15.70, duty_rate=0.237,
+        fba_fee=11.85, inbound_freight=6.00, referral_rate=0.15,
+        return_rate=record.baseline_rate,
+    )
+    stressed = admission.stress_test(candidate, record.stress_rate)
+    assert stressed.baseline_margin == pytest.approx(0.1506, abs=5e-4)
+    assert stressed.stress_margin == pytest.approx(0.1039, abs=5e-4)
+    assert stressed.margin_drop_pts == pytest.approx(4.68, abs=0.05)
+    assert stressed.worth_negotiating, "两档都为正——风险可承受，问题在基线只剩 0.06 个点"

@@ -6,11 +6,15 @@
 
 所以表里每一个数都在这里钉一遍，尤其是两个「看起来正好」的：
 
-- 咖啡机不改箱 **$14.90 = 14.99%**，差 0.01 个点，`margin >= 0.15` 判不过。
-  签字线只能取 **$14.89（15.01%）**。四舍五入的直觉在这里会签错。
+- 咖啡机不改箱 **$13.72 = 14.998%**：它是精确解 $13.719 四舍五入到分的结果，
+  看起来就是「算出来的那个数」，但它已经掉线。签字线只能取 **$13.70（15.04%）**。
+  旧口径下同类陷阱是 **$14.90 = 14.99%**（8% 退货率时），那条线已随退货率改 10% 作废，
+  但陷阱的形状没变——`margin >= 0.15` 判的是数，不是四舍五入的直觉。
 - 净化器 **$24.50 = 14.76%**，是「再让一档」最常见的心理价位，但它已经掉出线。
 
 参数若改（税率、头程、退货率），这些断言会红——这正是它们该做的事。
+2026-11-23 20:45 咖啡机退货率 8% → 10%，本文件咖啡机部分整段重算：四条旧线全部跌破
+15%（`docs/04` §33），新签字线 $15.70（改箱）/ $13.70（不改箱）。
 """
 
 from __future__ import annotations
@@ -24,10 +28,10 @@ PURIFIER = dict(
     selling_price=79.99, inbound_freight=6.00, duty_rate=0.125,
     referral_rate=0.15, return_rate=0.12, fba_fee=11.35,
 )
-# 咖啡机：$63.99 / 关税 23.7% / 头程 6.00 / 佣金 15% / 退货 8%
+# 咖啡机：$63.99 / 关税 23.7% / 头程 6.00 / 佣金 15% / 退货 10%（20:45 由 8% 改）
 COFFEE = dict(
     selling_price=63.99, inbound_freight=6.00, duty_rate=0.237,
-    referral_rate=0.15, return_rate=0.08,
+    referral_rate=0.15, return_rate=0.10,
 )
 
 THRESHOLD = 0.15
@@ -78,58 +82,84 @@ def test_purifier_ceiling_has_room_below_the_exact_solution():
     assert 24.30 < 24.33
 
 
-# ------------------------------------------------------------ 咖啡机（改箱）
+# ------------------------------------------------------------ 咖啡机（改箱 · 10% 退货）
 
 
 def test_coffee_repacked_price_points():
-    """箱规改到 8 英寸内（FBA $11.85）：开口 $16.50、签字线 $16.90。"""
-    assert _coffee(16.50, fba=11.85) == pytest.approx(0.1582, abs=5e-4)
-    assert _coffee(16.90, fba=11.85) == pytest.approx(0.1504, abs=5e-4)
-    assert _coffee(17.00, fba=11.85) == pytest.approx(0.1484, abs=5e-4)
+    """箱规改到 8 英寸内（FBA $11.85）：开口 $15.00、签字线 $15.70。
 
-    assert _coffee(16.50, fba=11.85) >= THRESHOLD
-    assert _coffee(16.90, fba=11.85) >= THRESHOLD
-    assert _coffee(17.00, fba=11.85) < THRESHOLD, "$17.00 是整数心理价，但它不过线"
-
-
-# ------------------------------------------------------------ 咖啡机（不改箱）
-
-
-def test_coffee_unrepacked_opening_is_simply_the_current_quote():
-    """不改箱时开口 $14.50 = 现报价，含义是「维持原价，不再压」。"""
-    assert _coffee(14.50, fba=14.40) == pytest.approx(0.1578, abs=5e-4)
-    assert _coffee(14.50, fba=14.40) >= THRESHOLD
-
-
-def test_coffee_signing_line_is_14_89_not_14_90():
-    """这条是本文件存在的理由：$14.90 差 0.01 个点，四舍五入的直觉会签错。
-
-    `admission` 判的是 `margin >= 0.15`，14.99% 就是不过。签字线只能取 $14.89。
+    10% 退货率把这一档的上限从 $16.92 压到 $15.73（−$1.19），
+    旧开口 $16.50 与旧签字 $16.90 现在分别只有 13.48% / 12.69%。
     """
-    assert _coffee(14.90, fba=14.40) == pytest.approx(0.1499, abs=5e-4)
-    assert _coffee(14.90, fba=14.40) < THRESHOLD, "看起来正好，实际没过"
+    assert _coffee(15.00, fba=11.85) == pytest.approx(0.1645, abs=5e-4)
+    assert _coffee(15.70, fba=11.85) == pytest.approx(0.1506, abs=5e-4)
+    assert _coffee(15.73, fba=11.85) == pytest.approx(0.1500, abs=5e-4)   # 精确解
+    assert _coffee(15.75, fba=11.85) == pytest.approx(0.1496, abs=5e-4)
 
-    assert _coffee(14.89, fba=14.40) == pytest.approx(0.1501, abs=5e-4)
-    assert _coffee(14.89, fba=14.40) >= THRESHOLD
+    assert _coffee(15.00, fba=11.85) >= THRESHOLD
+    assert _coffee(15.70, fba=11.85) >= THRESHOLD
+    assert _coffee(15.73, fba=11.85) >= THRESHOLD, "精确解仍在线内，但只余 0.003 个点"
+    assert _coffee(15.75, fba=11.85) < THRESHOLD, "$15.75 就是「往上凑整」会踩的那一步"
 
-    # 一分钱的差距决定过不过线
-    assert _coffee(14.89, fba=14.40) - _coffee(14.90, fba=14.40) < 0.0005
+
+# ------------------------------------------------------------ 咖啡机（不改箱 · 10% 退货）
+
+
+def test_coffee_unrepacked_at_the_old_quote_is_dead():
+    """$14.50 在 10% 下只有 13.45%——「不改箱就维持原价」这句话失效了。
+
+    8% 时它是 15.78%（一笔体面的维持），10% 时它掉 2.33 个点。
+    同一个价、同一台机器，只因为退货率从假设 8% 改成给定 10%。
+    """
+    assert _coffee(14.50, fba=14.40) == pytest.approx(0.1345, abs=5e-4)
+    assert _coffee(14.50, fba=14.40) < THRESHOLD
+
+    # 要它过线，采购价必须压到 $13.72 以下——对 $18.50 的现报价是 −25.8%
+    assert _coffee(13.72, fba=14.40) < THRESHOLD, "精确解四舍五入到分就掉线"
+    assert 1 - 13.72 / 18.50 > 0.25, "需降幅超过 25%，不在真实议价区间内"
+
+
+def test_coffee_signing_line_is_13_70_not_13_72():
+    """这条是本文件存在的理由：$13.72 差 0.002 个点，算术直觉会签错。
+
+    $13.719 是精确解，报到分位就是 $13.72 = 14.998%。`admission` 判 `margin >= 0.15`，
+    它不过——所以签字线取 $13.70。旧口径下同形状的陷阱是 $14.90 = 14.99%。
+    """
+    assert _coffee(13.72, fba=14.40) == pytest.approx(0.1500, abs=5e-4)
+    assert _coffee(13.72, fba=14.40) < THRESHOLD, "看起来正好，实际没过"
+
+    assert _coffee(13.70, fba=14.40) == pytest.approx(0.1504, abs=5e-4)
+    assert _coffee(13.70, fba=14.40) >= THRESHOLD
+
+    # 两分钱的差距决定过不过线
+    assert _coffee(13.70, fba=14.40) - _coffee(13.72, fba=14.40) < 0.001
+
+
+def test_old_8pct_signing_lines_must_now_fail():
+    """8% 口径的两条签字线在 10% 下必须判不过——**它们过线才是回归**。
+
+    这条是给「有人把退货率改回 8% 却忘了改价格」准备的：数字一动它就红。
+    """
+    assert _coffee(16.90, fba=11.85) < THRESHOLD, "旧改箱签字线 $16.90：12.69%"
+    assert _coffee(14.89, fba=14.40) < THRESHOLD, "旧不改箱签字线 $14.89：12.68%"
 
 
 # ------------------------------------------------------------ 两条线的相对位置
 
 
 def test_the_box_is_worth_more_than_the_price_concession():
-    """咖啡机：箱规值 $2.55/件，压价最多值 $0.40——所以筹码全押在箱规上。
+    """咖啡机：箱规把签字线从 $13.70 抬到 $15.70，值 $2.00/件；谈判让步空间只有 $0.70。
 
-    $0.40 = $16.90 − $16.50，是改箱那一档的全部谈判空间。
+    $0.70 = $15.70 − $15.00，是改箱那一档的全部谈判空间。
     把这两个数并排放，是为了让「先谈箱规」这个顺序有算术依据，不是话术偏好。
     """
-    box_gain = 16.90 - 16.50
+    box_gain = 15.70 - 13.70
     fee_gain = 14.40 - 11.85
-    assert box_gain == pytest.approx(0.40)
+    concession = 15.70 - 15.00
+    assert box_gain == pytest.approx(2.00)
     assert fee_gain == pytest.approx(2.55)
-    assert fee_gain > box_gain * 6
+    assert concession == pytest.approx(0.70)
+    assert box_gain > concession * 2, "箱规的价值仍是让步空间的近三倍"
 
 
 # ------------------------------------------------------------ 成交价（§28）

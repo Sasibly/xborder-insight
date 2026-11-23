@@ -147,8 +147,8 @@ def test_estimate_row_is_flagged_as_assumption(client):
     body = _post(client, payload).json()
 
     assert body["returns"]["evidence"]["kind"] == "estimate"
-    assert body["returns"]["rate"] == pytest.approx(0.08)
-    assert body["returns"]["stress"]["stress_returns"] == pytest.approx(0.15)
+    assert body["returns"]["rate"] == pytest.approx(0.10)
+    assert body["returns"]["stress"]["stress_returns"] == pytest.approx(0.14)
     assert any("不是这一台的实测值" in w for w in body["warnings"])
 
 
