@@ -163,6 +163,10 @@ class CostProfileInput(BaseModel):
     # 知道「包装不超过多大」但不知道精确三边时用这个：它直接约束体积重。
     package_volume_in3: float | None = Field(default=None, gt=0)
 
+    # 退货率。0.0 在 `H17` 闭合前同时表示「未指定」与「零退货」——
+    # 这是已知缺陷（`tests/test_profit_guardrails.py` 钉着），不在这里改：
+    # 改成必填会打坏「调用方立刻可用」这个前提。
+    # 要用库里的两档（含压力档），改用 `DecisionRequest.sku_key`，两者互斥。
     return_rate: float = Field(default=0.0, ge=0, le=1)
     returns_handling_fee: float = Field(default=0.0, ge=0)
     returns_refund_admin_rate: float = Field(default=0.20, ge=0, le=1)
@@ -296,6 +300,35 @@ class DecisionRequest(BaseModel):
     opportunity_score: float = Field(ge=0, le=1)
     cost: CostProfileInput
     data_provenance: str = Field(default="caller_provided", max_length=120)
+
+    #: 内部 SKU 键，指向 `product_returns` 里登记的两档退货率。
+    #:
+    #: 给了它，退货率就是**库里的数**，并且会额外跑一遍压力档、在响应的
+    #: `returns` 块里给出「值不值得谈价」的判定（`docs/04` §30）。
+    #: 不给，则沿用调用方在 `cost.return_rate` 里给的基线档，没有压力档。
+    #:
+    #: 两个来源**互斥**，理由与 `fba_fee` vs 包装事实相同：同时给会出现
+    #: 「基线来自调用方、压力档来自库」这种两个数不同源的混搭，
+    #: 而压测的全部意义就在于两档可比——不同源的两档比出来的差值是假的。
+    sku_key: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _returns_has_one_source(self) -> "DecisionRequest":
+        """退货率只能有一个来源。
+
+        `cost.return_rate` 的默认值是 0.0，而 0.0 在这里同时表示「没指定」
+        （`H17` 未闭合前，schema 分不出「漏填」与「真的是零退货」，
+        见 `tests/test_profit_guardrails.py`）。所以判定用「非零」而不是
+        「字段是否存在」：0.0 当作没指定，交给 `sku_key` 走库。
+        """
+        if self.sku_key is not None and self.cost.return_rate != 0.0:
+            raise ValueError(
+                "sku_key 与 cost.return_rate 不能同时给：退货率只有一个来源。"
+                "给了 sku_key 就以 product_returns 里的两档为准（基线 + 压力档）；"
+                "要显式指定基线档请去掉 sku_key——但那样就没有压力档，也不会有"
+                "「值不值得谈」的判定"
+            )
+        return self
 
 
 class AnalyzeJobPayload(AnalyzeRequest):

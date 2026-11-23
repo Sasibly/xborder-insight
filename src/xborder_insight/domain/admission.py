@@ -556,6 +556,56 @@ class StressResult:
     def label(self) -> str:
         return "值得谈" if self.worth_negotiating else "不值得谈"
 
+    @classmethod
+    def from_margins(
+        cls,
+        *,
+        baseline_returns: float,
+        stress_returns: float,
+        baseline_margin: float,
+        stress_margin: float,
+    ) -> "StressResult":
+        """用两个**已经算好的**毛利构造判定。
+
+        存在的理由：判定规则只能有一份，而算毛利的入口有两个——
+        CLI 走 `stress_test()`（它构造 `Candidate` 再 `evaluate()`），
+        决策接口走 `profit.compute()` 两遍（接口不构造 `Candidate`，
+        因为 FBA 可能是一个区间、由费率表算出来）。
+        如果接口那边把「两档都为正才值得谈」重写一遍，改口径时就会只改一处。
+
+        压力档必须高于基线的校验也放在这里：两个入口都要过这一关。
+        """
+        if stress_returns <= baseline_returns:
+            raise AdmissionInputInvalid(
+                f"压力档退货率 {stress_returns:.2%} 必须高于基线 "
+                f"{baseline_returns:.2%}（两个参数可能写倒了）"
+            )
+        return cls(
+            baseline_returns=baseline_returns,
+            stress_returns=stress_returns,
+            baseline_margin=baseline_margin,
+            stress_margin=stress_margin,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """序列化。给接口层用，避免字段名在 service 层再抄一遍。
+
+        四个数一起给，不让调用方自己去比：`worth_negotiating` 是判定，
+        `reason` 是判定的依据，两者分开写会漂移。
+        """
+        return {
+            "baseline_returns": round(self.baseline_returns, 6),
+            "stress_returns": round(self.stress_returns, 6),
+            "baseline_margin": round(self.baseline_margin, 6),
+            "stress_margin": round(self.stress_margin, 6),
+            "margin_drop_pts": round(self.margin_drop_pts, 4),
+            "baseline_ok": self.baseline_ok,
+            "stress_ok": self.stress_ok,
+            "worth_negotiating": self.worth_negotiating,
+            "label": self.label,
+            "reason": self.reason,
+        }
+
     @property
     def reason(self) -> str:
         if self.worth_negotiating:
@@ -583,18 +633,13 @@ def stress_test(candidate: Candidate, stress_returns: float) -> StressResult:
     压力档必须高于基线——反着传大概率是把两个参数写倒了，
     静默按「压力档 = 基线」算会得到一条永远为正的结论。
     """
-    if stress_returns <= candidate.return_rate:
-        raise AdmissionInputInvalid(
-            f"压力档退货率 {stress_returns:.2%} 必须高于基线 "
-            f"{candidate.return_rate:.2%}（两个参数可能写倒了）"
-        )
     base = evaluate(candidate)
     stressed = evaluate(replace(candidate, return_rate=stress_returns))
     if base.gross_margin is None or stressed.gross_margin is None:
         raise AdmissionInputInvalid(
             "压测需要完整输入（两档毛利都算得出来）；缺项请先补齐，不会用默认值代替"
         )
-    return StressResult(
+    return StressResult.from_margins(
         baseline_returns=candidate.return_rate,
         stress_returns=stress_returns,
         baseline_margin=base.gross_margin,

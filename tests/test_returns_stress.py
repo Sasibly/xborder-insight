@@ -8,7 +8,9 @@
    写成文档只能读，写成代码改口径时这条会红。
 
 两档退货率的取值来自用户 2026-11-23 的指定（净化器基线 12% / 压力 17%，
-咖啡机基线 8% / 压力 15%），仍是 draft——`cost_params` 里没有逐 SKU 的退货率字段。
+咖啡机基线 8% / 压力 15%），AI 设定、非核实。11-23 18:35 起已进库
+（`product_returns`，v14），两行仍是 draft——表让「借来的还是猜的」可见，
+没有让它们变成读到的。
 """
 
 from __future__ import annotations
@@ -106,3 +108,40 @@ def test_stress_refuses_to_run_on_incomplete_input():
     )
     with pytest.raises(adm.AdmissionInputInvalid):
         adm.stress_test(broken, 0.17)
+
+
+# ---------- 判定规则只有一份（11-23 19:20：接口接表后新增） ----------
+#
+# 算毛利有两个入口：CLI 走 `stress_test()`（构造 Candidate 再 evaluate），
+# 决策接口走 `profit.compute()` 两遍（它不构造 Candidate，因为 FBA 可能是
+# 费率表算出来的区间）。两个入口都要用同一条「两档都为正才值得谈」，
+# 所以规则被抽到 `StressResult.from_margins()`，`stress_test()` 只是它的
+# 第一个调用方。下面两条锁住这件事。
+
+
+def test_from_margins_reproduces_stress_test_verdict():
+    """同一个数，两条路必须给出同一套判定。
+
+    `from_margins` 若哪天自己算一遍（比如把门槛从 0 改成 15%），
+    CLI 与接口就会各说一套，而两边都「有测试」。
+    """
+    via_candidate = adm.stress_test(_cand(PURIFIER, 24.00, 0.12), 0.17)
+    via_margins = adm.StressResult.from_margins(
+        baseline_returns=via_candidate.baseline_returns,
+        stress_returns=via_candidate.stress_returns,
+        baseline_margin=via_candidate.baseline_margin,
+        stress_margin=via_candidate.stress_margin,
+    )
+    assert via_margins.as_dict() == via_candidate.as_dict()
+    assert via_margins.label == "值得谈"
+
+
+def test_from_margins_rejects_inverted_tiers():
+    """接口那条路也必须挡住「两档写倒」——挡在 service 之前就晚了。"""
+    with pytest.raises(adm.AdmissionInputInvalid):
+        adm.StressResult.from_margins(
+            baseline_returns=0.17,
+            stress_returns=0.12,
+            baseline_margin=0.09,
+            stress_margin=0.15,
+        )

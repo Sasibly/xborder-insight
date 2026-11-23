@@ -422,6 +422,11 @@ async def decide_product(
     合规结论来自系统内置规则表——当前规则全为 draft，因此该品类会返回
     NO_GO 并标明「含未核实项」。这是有意的：不确定就说不确定。
 
+    退货率有两个来源，二选一（`docs/04` §30）：带 `sku_key` 走
+    `product_returns` 的两档，响应多一个 `returns` 块（含压力档与证据强弱）；
+    不带则用 `cost.return_rate`，没有压力档。两个都给是 422——
+    基线来自调用方、压力档来自库，两档不同源，比出来的差值是假的。
+
     不做配额判定：本接口不调用模型，token 消耗为零，按额度拦它属于误伤。
     """
     return run_decision(payload)
