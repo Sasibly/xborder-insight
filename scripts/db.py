@@ -979,9 +979,11 @@ def main(argv: list[str] | None = None) -> int:
              "standalone=纯电池(PI965)。含锂但不给这一项 → 结论为「需先确认电池形态」",
     )
 
+    # help 里的百分号必须写成 `%%`：argparse 会用 % 格式化这段文本，
+    # 裸写 `15%` 会让 `% 毛` 被当成格式符，整个 `--help` 直接抛 ValueError。
     scr_parser = sub.add_parser(
         "screen",
-        help="候选准入：这个品在 15% 毛利线下还剩多少空间（闸一 + 闸二）",
+        help="候选准入：这个品在 15%% 毛利线下还剩多少空间（闸一 + 闸二）",
     )
     scr_parser.add_argument("--name", default="candidate", help="候选名（输出用）")
     scr_parser.add_argument("--price", type=float, default=None, help="售价（美元）")
