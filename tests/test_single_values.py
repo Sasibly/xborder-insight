@@ -196,3 +196,52 @@ def test_signed_price_profit_per_unit():
     """15.05% × $79.99 = $12.04/件——谈判桌上唯一该记住的绝对数。"""
     gross = _purifier(24.30) * 79.99
     assert gross == pytest.approx(12.04, abs=0.02)
+
+
+# ------------------------------------------------------------ 退货率的两种读法
+
+
+def test_fourteen_point_three_five_is_a_margin_not_a_return_rate():
+    """`14.35%` 是毛利（$24.30 / 退货 12.6%），不是退货率。
+
+    用户 17:28 把它当退货率回报过一次。这两个数在 `docs/04` §28.4 里是同一行的左右两列，
+    混起来的代价是 2 个毛利点：真按 14.35% 退货率算，$24.30 只有 12.29%。
+    这条用例把「同一个百分比、两种含义」的差距钉成数字，避免以后再串。
+    """
+    as_margin = _margin(
+        24.30, fba=11.35,
+        common={**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": 0.126},
+    )
+    as_return_rate = _margin(
+        24.30, fba=11.35,
+        common={**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": 0.1435},
+    )
+    assert as_margin == pytest.approx(0.1435, abs=5e-4)
+    assert as_return_rate == pytest.approx(0.1229, abs=5e-4)
+
+    gap_pts = (as_margin - as_return_rate) * 100
+    assert gap_pts == pytest.approx(2.06, abs=0.02), "两个读法差 2 个毛利点，不能混用"
+    assert gap_pts * 79.99 / 100 == pytest.approx(1.65, abs=0.02)
+
+
+def test_if_the_return_rate_were_really_14_35_the_action_changes():
+    """真 14.35% 退货率时，15% 线要 $22.45（比成交价低 $1.85）——那是重谈量级。
+
+    与「12.6% 下接受 14.35%」是两套动作：前者连谈两次都不一定够，后者什么也不用做。
+    所以这一个百分点的口径必须先对齐再动，不能先动手再对齐。
+    """
+    rate = 0.1435
+    common = {**{k: v for k, v in PURIFIER.items() if k != "fba_fee"}, "return_rate": rate}
+    at_signed = _margin(24.30, fba=11.35, common=common)
+    assert at_signed < 0.15
+
+    # 二分出 15% 线（与 admission 同口径：毛利额 / 售价）
+    lo, hi = 10.0, 24.30
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _margin(mid, fba=11.35, common=common) >= 0.15:
+            lo = mid
+        else:
+            hi = mid
+    assert lo == pytest.approx(22.45, abs=0.02)
+    assert 24.30 - lo == pytest.approx(1.85, abs=0.02)
