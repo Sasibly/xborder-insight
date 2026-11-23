@@ -23,8 +23,10 @@ REFERRAL = 0.15
 FREIGHT = 6.00
 RETURNS = 0.08
 
-# A = 项目里已固化的实测包装（measured_skus.json）
-# B = 11-21 17:20 询价单上给的那一套（`docs/07` H19 说两套不可能同时对）
+# A = 项目里已固化的包装口径（measured_skus.json，用户 11-21 口述「包装后三边 + 毛重」）
+# B = 供应商规格书给的那一套（`docs/07` H19；来源由用户 11-23 答为「供应商规格书」）
+#     互校结果：五台里没有一台能用 B 当彩盒（见下面的
+#     test_no_supplier_spec_set_can_be_used_as_the_carton）
 SKU = {
     "air_purifier": dict(
         price=79.99, cogs=32.50, duty=0.125, lithium=False,
@@ -617,3 +619,43 @@ def test_18_3_is_loose_below_56_and_tight_above(fees):
     # 分界点本身：$18.3 恰好等于该售价的上限
     assert cap_at(56.0) == pytest.approx(18.30, abs=0.35)
 
+
+
+def test_no_supplier_spec_set_can_be_used_as_the_carton():
+    """11-23 用户答「B 来自供应商规格书」——但五台里没有一台能把 B 当彩盒用。
+
+    判法不需要知道哪套真（`package.compare_packaging`）：箱子包着机器，只能更大更重。
+
+    | SKU | B 的体积 / A | 重量差 | 互校结论 |
+    | --- | --- | --- | --- |
+    | 净化器 | 33.4% | −9.24 lb | B 是裸机 |
+    | 水壶 | 20.6% | −1.71 lb | B 是裸机 |
+    | 咖啡机 | 100.0% | +1.48 lb | 三边相同却差重 → 至少一套错 |
+    | 扫地机 | 99.6% | +14.80 lb | 同上 |
+
+    所以「填进去」这件事本身不能做：净化器一旦换成 B，FBA 从 $23.84 掉到 $11.35，
+    毛利从 −7.64% 变成 +7.96%——而那是**裸机**的体积，不是要走 FBA 的箱。
+    这一条测试就是那道闸：将来谁想用 B 替换 A，必须先让这道闸变绿。
+    """
+    expected = {
+        "air_purifier": (pkg.SPEC_BOX_VS_UNIT, "A"),
+        "electric_kettle": (pkg.SPEC_BOX_VS_UNIT, "A"),
+        "coffee_machine": (pkg.SPEC_CONTRADICTION_SAME_BOX, None),
+        "robot_vacuum": (pkg.SPEC_CONTRADICTION_SAME_BOX, None),
+    }
+    for key, (verdict, box) in expected.items():
+        spec = SKU[key]
+        assert spec["a"] is not None and spec["b"] is not None
+        (a_dims, a_lb), (b_dims, b_lb) = spec["a"], spec["b"]
+        relation = pkg.compare_packaging(
+            pkg.SpecReading("A", a_dims, a_lb, "measured_skus.json"),
+            pkg.SpecReading("B", b_dims, b_lb, "供应商规格书"),
+        )
+        assert relation.verdict == verdict, f"{key}: {relation.reason}"
+        assert relation.box == box, f"{key}: 判出的箱是 {relation.box}，应为 {box}"
+        # 判不出箱时，任何「挑一个顶上」的做法都会得到错的费用
+        if box is None:
+            assert pkg.usable_as_box(
+                pkg.SpecReading("A", a_dims, a_lb),
+                pkg.SpecReading("B", b_dims, b_lb),
+            ) is None

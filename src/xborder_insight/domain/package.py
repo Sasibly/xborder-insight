@@ -647,3 +647,141 @@ def _validate_volume(volume_in3: float | None) -> float | None:
             detail="没有体积上界就传 None；填 0 会让体积重变成 0，等于按最轻档计费",
         )
     return value
+
+
+# ------------------------------------------------ 两套读数能否同时成立
+#
+# 同一个 SKU 常常有两套「尺寸 + 重量」：一套是量箱子量出来的，一套是供应商
+# 规格书或商品详情页抄的。两套都填进费率表不报错，但会得到差 19% 的费用。
+#
+# 这两套读数本身受一条硬约束：**彩盒包着机器，所以只能更大、更重**。
+# 于是不需要知道哪套是真的，就能判出「哪套不可能是彩盒」：
+#
+#   体积更大、重量也更重  → 那套是箱，另一套是机（可以放心用箱那套）
+#   体积更大、反而更轻    → 两套里至少一套错了
+#   三边几乎相同、重量不同 → 同一外箱尺寸不可能既含箱又不含箱，至少一套错了
+#
+# 这条判定不做「取保守值」这种折中——折中出来的数既不等于箱也不等于机，
+# 只是看起来像个决策。
+
+#: 两套三边算作「同一外箱」的相对体积容差。2% 对应几毫米的测量噪声。
+SAME_BOX_VOLUME_TOL = 0.02
+
+#: 毛重判作「不同」的最小差值（磅）。低于它属于秤的重复性误差。
+SAME_BOX_WEIGHT_TOL_LB = 0.1
+
+SPEC_BOX_VS_UNIT = "box_vs_unit"
+SPEC_CONTRADICTION_WEIGHT = "contradiction_weight"
+SPEC_CONTRADICTION_SAME_BOX = "contradiction_same_box"
+SPEC_INDISTINGUISHABLE = "indistinguishable"
+
+
+@dataclass(frozen=True)
+class SpecReading:
+    """一条「三边 + 重量」读数。`source` 要写清出处，否则两套数没有可比性。"""
+
+    label: str
+    dims_in: tuple[float, float, float]
+    weight_lb: float
+    source: str = ""
+
+    @property
+    def volume_in3(self) -> float:
+        length, width, height = self.dims_in
+        return float(length * width * height)
+
+
+@dataclass(frozen=True)
+class SpecRelation:
+    """两条读数之间的关系。`box` / `unit` 只在判得出时才给，判不出就是 None。"""
+
+    verdict: str
+    reason: str
+    box: str | None
+    unit: str | None
+    volume_ratio: float
+    weight_delta_lb: float
+
+
+def compare_packaging(first: SpecReading, second: SpecReading) -> SpecRelation:
+    """判两条读数哪条是彩盒、哪条是裸机，或判它们不可能同时成立。"""
+    for reading in (first, second):
+        if reading.volume_in3 <= 0 or reading.weight_lb <= 0:
+            raise InputInvalid(
+                f"读数 {reading.label!r} 的三边与重量必须为正，收到 "
+                f"{reading.dims_in!r} / {reading.weight_lb!r}"
+            )
+
+    small, large = sorted((first, second), key=lambda r: r.volume_in3)
+    volume_ratio = small.volume_in3 / large.volume_in3
+    weight_delta = abs(first.weight_lb - second.weight_lb)
+    same_volume = volume_ratio >= 1.0 - SAME_BOX_VOLUME_TOL
+    same_weight = weight_delta <= SAME_BOX_WEIGHT_TOL_LB
+
+    if same_volume and not same_weight:
+        return SpecRelation(
+            verdict=SPEC_CONTRADICTION_SAME_BOX,
+            reason=(
+                f"三边几乎相同（体积比 {volume_ratio:.1%}）却差 {weight_delta:.2f} lb。"
+                "同一个外箱尺寸不可能一套含箱、一套不含箱——至少一套不是这台的"
+            ),
+            box=None,
+            unit=None,
+            volume_ratio=volume_ratio,
+            weight_delta_lb=weight_delta,
+        )
+
+    if same_volume and same_weight:
+        return SpecRelation(
+            verdict=SPEC_INDISTINGUISHABLE,
+            reason="三边与重量都在噪声范围内，两套是同一个数，不构成分歧",
+            box=None,
+            unit=None,
+            volume_ratio=volume_ratio,
+            weight_delta_lb=weight_delta,
+        )
+
+    if large.weight_lb > small.weight_lb:
+        return SpecRelation(
+            verdict=SPEC_BOX_VS_UNIT,
+            reason=(
+                f"体积大的那套同时更重（+{weight_delta:.2f} lb），符合「箱包着机」；"
+                f"体积比 {volume_ratio:.1%}，小的那套只能是裸机"
+            ),
+            box=large.label,
+            unit=small.label,
+            volume_ratio=volume_ratio,
+            weight_delta_lb=weight_delta,
+        )
+
+    return SpecRelation(
+        verdict=SPEC_CONTRADICTION_WEIGHT,
+        reason=(
+            f"体积大的那套反而轻 {weight_delta:.2f} lb（体积比 {volume_ratio:.1%}）。"
+            "箱子不可能比它装的机器还轻，两套里至少一套错了"
+        ),
+        box=None,
+        unit=None,
+        volume_ratio=volume_ratio,
+        weight_delta_lb=weight_delta,
+    )
+
+
+def usable_as_box(*readings: SpecReading) -> SpecReading | None:
+    """从若干条读数里挑出唯一可用作「彩盒」的那条；判不出就返回 None。
+
+    单条读数直接返回它自己（没有第二条可对照，只能用它，但调用方应把它标成
+    未核实）。两条争不出结果时返回 None——此时**不能**按体积或重量挑一个
+    更保守的顶上，因为「保守」在这里没有方向：更小的箱意味着更低的费，
+    而错的低费正是这类错误最贵的形态。
+    """
+    if not readings:
+        return None
+    if len(readings) == 1:
+        return readings[0]
+    if len(readings) > 2:
+        raise InputInvalid("目前只支持两套读数互校；三套以上请先人工对齐口径")
+    relation = compare_packaging(readings[0], readings[1])
+    if relation.verdict != SPEC_BOX_VS_UNIT:
+        return None
+    return readings[0] if relation.box == readings[0].label else readings[1]
