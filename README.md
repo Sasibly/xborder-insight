@@ -744,32 +744,38 @@ AUTH_REQUIRED=false 起服务 → 第 03、04 项变红，退出码 1
 库未迁移就起服务           → /ready 503，退出码 2（环境错误，不是「通过」）
 ```
 
-### 容器冒烟：已实测 17/17（11-19 记录；11-23 补 `/metrics` 后应为 19 项，未重跑 docker）
+### 容器冒烟：**19/19**（2026-11-23 16:21，schema v13）
 
 ```text
-17 项全过（docker 目标）。默认基础镜像 python:3.13-slim 与 MCR devcontainers 各跑一遍，均为 17/17、EXIT=0。
-以下记录于 2026-11-19，当时 schema 为 v8；迁移 v9 只新增一张表，`/ready` 的 schema 字段会随版本递进（local 目标已于 11-21 在 v9 上复跑 15/15）：
+19 项全过（docker 目标）。基础镜像走 ECR 兜底：public.ecr.aws/docker/library/python:3.13-slim。
 
 01 /health 存活                          {"status":"ok","run_mode":"mock"}
-02 /ready 就绪且 schema 与源码一致        schema=v8 auth=required
+02 /ready 就绪且 schema 与源码一致        schema=v13 auth=required
 03 /ready 回报 auth=required
 04 无密钥访问 /v1/jobs → 401 + WWW-Authenticate
-05 创建租户密钥（容器内执行 CLI）          tenant=smoke-a / smoke-b
-06 /v1/datasets 可读（镜像含样本数据）     air_purifier, coffee_machine, electric_kettle, pet_fountain
-07 提交分析任务 → 202                     status=queued
-08 分析任务执行完成（容器内 worker）       llm_calls=3
-09 结果含主题与证据                       3 个主题 · 3 条评论
-10 同键重放 → 同一 job_id                 Idempotency-Replayed=true
-11 同键换请求体 → 409                     idempotency_conflict
-12 另一租户读同一任务 → 404
-13 执行台账每次尝试一条                    attempt=1
-14 提交决策任务 → 202
-15 决策任务出结论                         verdict=NO_GO
-16 容器以非 root 运行                     uid=10001     ← 容器专属
-17 容器 HEALTHCHECK 判定健康              healthy       ← 容器专属
+05 无密钥访问 /metrics → 401
+06 /metrics 返回 Prometheus 文本          637 字节
+07 创建租户密钥                           tenant=smoke-a / smoke-b
+08 /v1/datasets 可读（镜像含样本数据）     air_purifier, coffee_machine, electric_kettle, pet_fountain
+09 提交分析任务 → 202                     status=queued
+10 分析任务执行完成（容器内 worker）       llm_calls=3
+11 结果含主题与证据                       3 个主题 · 3 条评论
+12 同键重放 → 同一 job_id                 Idempotency-Replayed=true
+13 同键换请求体 → 409                     idempotency_conflict
+14 另一租户读同一任务 → 404
+15 执行台账每次尝试一条                    attempt=1
+16 提交决策任务 → 202
+17 决策任务出结论                         verdict=NO_GO
+18 容器以非 root 运行                     uid=10001     ← 容器专属
+19 容器 HEALTHCHECK 判定健康              healthy       ← 容器专属
 
-冒烟通过：17/17
+冒烟通过：19/19
 ```
+
+这一跑顺带验证了「Docker Hub 不可达」这条降级路径：`docker.io/library/python:3.13-slim`
+的元数据拉取返回 **Bad Gateway**（认证服务不可达，不是镜像不存在），换成
+`--base-image public.ecr.aws/docker/library/python:3.13-slim` 后一次通过，断言一条没改。
+11-19 的 17/17 记录（schema v8）保留在 git 历史里。
 
 这条路径**第一次是构建失败的**，而且失败点不在 Dockerfile 的逻辑，在交付环境本身：
 
@@ -907,8 +913,9 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 2. **核实合规规则**（部分完成）：FCC 授权路径已核实为 Part 18 + SDoC 并置 `verified`；
    FCC ID 标注因「是否含独立发射机」属产品事实而保持 draft；安全检测与 Qi 认证待查。
    见 `docs/04` 第 7 节
-3. ~~在启动 Docker 的机器上跑一次 `make smoke-docker`~~ **已完成（11-19）**：官方 `python:3.13-slim`
-   经 AWS ECR Public 取得，17/17、EXIT=0
+3. ~~在启动 Docker 的机器上跑一次 `make smoke-docker`~~ **已完成（11-19 17/17；11-23 16:21 复跑 19/19）**：
+   官方 `python:3.13-slim` 经 AWS ECR Public 取得；11-23 这次 Docker Hub 认证服务返回 Bad Gateway，
+   用 `--base-image` 换 ECR 后一次通过。连同非 root 与 HEALTHCHECK 两项容器专属断言一起验过
 4. ~~接入真实 embedding 并重标定阈值~~ **已完成**：`DashScopeEmbedder` 已接入。2026-11-21 扩到 216 条 / 6 品类 / 354 对重标定，阈值 0.65 → **0.72**（ARI 0.240 → 0.357，bootstrap CI [0.68,0.74]），
    同时确认「极性必须进分组键」——「充电快」与「充电慢」的相似度 0.872 是本数据最高的跨极性对。
    详见 [`docs/05-聚类阈值标定.md`](docs/05-聚类阈值标定.md)

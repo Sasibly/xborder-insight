@@ -303,7 +303,7 @@ docker logs xborder 2>&1 | grep a1b2c3d4e5f6
 | 任何代码改动 | `make check` | 退出 0：测试全绿、往返 vN、F1 与基线一致 |
 | 改了迁移 | `make check` + `make db-status` | 往返通过；版本号 +1 |
 | 改了接口 / 鉴权 / 指标 | `make smoke` | 17/17 |
-| 改镜像 | `make smoke-docker` | 19/19（含非 root、HEALTHCHECK；11-23 补 `/metrics` 后未重跑 docker 目标，local 已 17/17） |
+| 改镜像 | `make smoke-docker` | 19/19（含非 root、HEALTHCHECK）；11-23 16:21 在 v13 上实测通过，Docker Hub 不可达时加 `BASE_IMAGE=public.ecr.aws/docker/library/python:3.13-slim` |
 | 上线前 | `curl /health` → `curl /ready` → `curl /metrics` | ready 里 `auth=required`、`schema_version` 与代码一致 |
 | 回滚后 | 同上三个端点 | **尤其确认 `auth`**：旧启动命令常常漏了 `AUTH_REQUIRED` |
 
@@ -349,6 +349,7 @@ python scripts/smoke.py     # 17/17
 | 评测 | F1 0.6070 / P 0.7364 / R 0.5163，与基线逐位一致 |
 | `db.py up` | 13 条迁移全部应用，`data/app.sqlite3` 生成 |
 | `smoke.py` | 17/17，`/ready` 回 `schema=v13 auth=required` |
+| `smoke.py --target docker` | **19/19**（另加非 root `uid=10001` 与 HEALTHCHECK）；Docker Hub 认证服务返回 Bad Gateway 时用 `--base-image public.ecr.aws/docker/library/python:3.13-slim` |
 
 ### 13.3 这次演练真抓到的缺陷（已修）
 
