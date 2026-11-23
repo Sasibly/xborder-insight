@@ -23,29 +23,34 @@ REFERRAL = 0.15
 FREIGHT = 6.00
 RETURNS = 0.08
 
-# A = 项目里已固化的包装口径（measured_skus.json，用户 11-21 口述「包装后三边 + 毛重」）
-# B = 供应商规格书给的那一套（`docs/07` H19；来源由用户 11-23 答为「供应商规格书」）
-#     互校结果：五台里没有一台能用 B 当彩盒（见下面的
-#     test_no_supplier_spec_set_can_be_used_as_the_carton）
+# A = 11-21 记的包装口径（用户口述「包装后三边 + 毛重」）
+# B = 11-21 询价单/11-23 供应商规格书给的那一套
+#
+# 11-23 13:51 用户补了「箱/机/毛重/净重/空箱重」五项分解，两组数从此能自证：
+#   - 净化器 B：箱 1806 in³ 装机器 1116 in³（1.62 倍），毛重 9.26 = 7.5 + 1.76 ✓
+#   - 水壶   B：箱 167 in³ 装机器 90 in³（1.86 倍），毛重 3.09 = 2.2 + 0.89 ✓
+#   - 净化器 A：箱 5400 in³ 是机器的 4.84 倍，每边余 8.5/3/9 英寸 ✗（不是一台的箱）
+# 所以净化器与水壶的当前口径改为 B（`current`），A 保留作审计。
+# 咖啡机/扫地机的 A、B 仍互相矛盾（14.5↔15.98、16.2↔31），暂按 A。
 SKU = {
     "air_purifier": dict(
-        price=79.99, cogs=32.50, duty=0.125, lithium=False,
+        price=79.99, cogs=32.50, duty=0.125, lithium=False, current="b",
         a=((24.0, 15.0, 15.0), 18.5), b=((13.78, 7.48, 17.52), 9.26),
     ),
     "coffee_machine": dict(
-        price=63.99, cogs=18.50, duty=0.237, lithium=False,
+        price=63.99, cogs=18.50, duty=0.237, lithium=False, current="a",
         a=((16.0, 13.0, 9.5), 14.5), b=((16.0, 13.0, 9.5), 15.98),
     ),
     "electric_kettle": dict(
-        price=29.99, cogs=6.80, duty=0.152, lithium=False,
+        price=29.99, cogs=6.80, duty=0.152, lithium=False, current="b",
         a=((10.5, 9.2, 8.4), 4.8), b=((6.69, 6.69, 3.74), 3.09),
     ),
     "robot_vacuum": dict(
-        price=199.99, cogs=118.00, duty=0.125, lithium=True,
+        price=199.99, cogs=118.00, duty=0.125, lithium=True, current="a",
         a=((22.0, 18.0, 14.0), 16.2), b=((17.9, 13.3, 23.2), 31.0),
     ),
     "pet_fountain": dict(
-        price=45.99, cogs=14.50, duty=0.125, lithium=True,
+        price=45.99, cogs=14.50, duty=0.125, lithium=True, current="b",
         a=None, b=((9.0, 8.0, 10.0), 2.8),
     ),
 }
@@ -139,17 +144,61 @@ def fees(conn):
     return out
 
 
-def test_every_sku_is_no_go_at_the_current_price(fees):
-    """五台在现价上全部达不到 15%——这是 §16.3 的主结论。
+def test_all_five_are_no_go_under_the_superseded_spec_set(fees):
+    """五台在 11-21 那套口径下全部达不到 15%——这是 §16.3 的主结论。
 
-    之所以要一条测试守住它，是因为这个结论**容易被一次参数改动悄悄翻转**：
-    把关税按 3.7% 算、或者把 FBA 换成便宜的尺寸段，净化器就会从 −7.65%
-    变成 +7.97%，而报告里还写着「全 NO_GO」。
+    保留它是因为它是「为什么当时判全 NO_GO」的唯一可复现证据。11-23 拿到外箱
+    分解之后，净化器这一台已经翻了（见下面 test_only_the_purifier_passes...），
+    但**翻的原因不是模型变了，是输错了箱**——所以这条历史断言仍然成立且必须留着：
+    它证明「按错的箱子算，结论就是全否」，不是事后改口。
+
+    之所以要一条测试守住它，还因为这类结论**容易被一次参数改动悄悄翻转**：
+    把关税按 3.7% 算、或者把 FBA 换成便宜的尺寸段，净化器就会从 −7.64%
+    变成 +7.96%，而报告里还写着「全 NO_GO」。
     """
     for key, spec in SKU.items():
         _, env = fees[(key, "a" if spec["a"] else "b")]
         r = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"])
         assert r.gross_margin < 0.15, f"{key} 竟然过了 15% 线：{r.gross_margin:.2%}"
+
+
+def test_the_purifier_flips_from_hopeless_to_negotiable(fees):
+    """按 11-23 核定的外箱，净化器从 −7.64% 变成 **+7.96%**：仍然不到 15%，
+    但性质变了——缺口从 22.6 点缩到 7.0 点，采购价需要降的幅度从 48.5% 变成 15.1%。
+
+    这条测试要守住的不是「它过了」，而是**「它进入了议价区间」这个门槛**：
+
+    | | 11-21 口径 | 11-23 核定 |
+    | --- | --- | --- |
+    | 毛利 | −7.64% | **+7.96%** |
+    | 缺口 | 22.6 点 | **7.0 点** |
+    | 采购上限 | $16.74（−48.5%） | **$27.60（−15.1%）** |
+
+    −48.5% 不是谈判能拿到的折扣（那是换供应商或换型），−15.1% 是。所以判据是
+    「需降幅是否落在 15–25%」，不是「毛利是否为正」——正毛利但需降 30% 的品，
+    和负毛利的品在决策上是一样的：不做。
+
+    水壶虽然同批换了口径（−7.23% → +2.77%），仍需降 45.9%，救不回来。
+    换箱能救的是「箱错得离谱且结构本来不差」的品，不是所有箱错的品。
+    """
+    margins, ceilings = {}, {}
+    for key, spec in SKU.items():
+        _, env = fees[(key, spec["current"])]
+        margins[key] = _profit(
+            spec["cogs"], spec["price"], env.low_usd, spec["duty"]
+        ).gross_margin
+        ceilings[key] = _solve_cogs(0.15, spec["price"], env.low_usd, spec["duty"])
+
+    assert margins["air_purifier"] == pytest.approx(0.0796, abs=5e-4)
+    assert ceilings["air_purifier"] == pytest.approx(27.60, abs=0.02)
+    assert ceilings["air_purifier"] / 32.50 - 1 == pytest.approx(-0.1508, abs=1e-3)
+
+    assert margins["electric_kettle"] == pytest.approx(0.0277, abs=5e-4)
+    assert ceilings["electric_kettle"] == pytest.approx(3.68, abs=0.02)
+
+    # 仍然没有一台到 15%——「进入议价区间」不等于「能做」
+    passed = [key for key, margin in margins.items() if margin >= 0.15]
+    assert passed == []
 
 
 def test_per_sku_duty_must_not_be_flattened_to_one_rate(fees):
@@ -621,21 +670,24 @@ def test_18_3_is_loose_below_56_and_tight_above(fees):
 
 
 
-def test_no_supplier_spec_set_can_be_used_as_the_carton():
-    """11-23 用户答「B 来自供应商规格书」——但五台里没有一台能把 B 当彩盒用。
+def test_two_readings_alone_cannot_tell_which_is_the_carton():
+    """只靠「两套读数互校」，净化器与水壶会判成「A 是箱、B 是机」——**而这个判定是错的**。
 
-    判法不需要知道哪套真（`package.compare_packaging`）：箱子包着机器，只能更大更重。
+    箱子包着机器，只能更大更重。A（24×15×15 / 18.5 lb）确实又大又重，所以在
+    只有两条读数时，物理关系指向 A。11-21 的结论就停在这一步。
 
-    | SKU | B 的体积 / A | 重量差 | 互校结论 |
-    | --- | --- | --- | --- |
-    | 净化器 | 33.4% | −9.24 lb | B 是裸机 |
-    | 水壶 | 20.6% | −1.71 lb | B 是裸机 |
-    | 咖啡机 | 100.0% | +1.48 lb | 三边相同却差重 → 至少一套错 |
-    | 扫地机 | 99.6% | +14.80 lb | 同上 |
+    11-23 补了机器尺寸后才知道：A 的体积是机器的 4.84 倍，每边余 8.5/3/9 英寸，
+    那不是一台 15.5×12×6 的机器的彩盒——是一箱多台、或者另一个型号。
 
-    所以「填进去」这件事本身不能做：净化器一旦换成 B，FBA 从 $23.84 掉到 $11.35，
-    毛利从 −7.64% 变成 +7.96%——而那是**裸机**的体积，不是要走 FBA 的箱。
-    这一条测试就是那道闸：将来谁想用 B 替换 A，必须先让这道闸变绿。
+    所以这条测试守的是**判定的层次**，不是某个结论：
+
+    | 输入 | 能判什么 | 判不出什么 |
+    | --- | --- | --- |
+    | 两套箱读数 | 谁更大更重（`compare_packaging`） | 大的那套是不是**这台**机器的箱 |
+    | 加机器三边 | 装不装得下、体积比像不像一箱一台（`verify_carton_reading`） | 箱上那个重量是不是这台机器的 |
+    | 再加净重与空箱重 | 毛重能不能拆开 | — |
+
+    三层都过，才叫「这套读数能用」。
     """
     expected = {
         "air_purifier": (pkg.SPEC_BOX_VS_UNIT, "A"),
@@ -648,14 +700,113 @@ def test_no_supplier_spec_set_can_be_used_as_the_carton():
         assert spec["a"] is not None and spec["b"] is not None
         (a_dims, a_lb), (b_dims, b_lb) = spec["a"], spec["b"]
         relation = pkg.compare_packaging(
-            pkg.SpecReading("A", a_dims, a_lb, "measured_skus.json"),
-            pkg.SpecReading("B", b_dims, b_lb, "供应商规格书"),
+            pkg.SpecReading("A", a_dims, a_lb, "11-21 口述"),
+            pkg.SpecReading("B", b_dims, b_lb, "11-23 外箱分解"),
         )
         assert relation.verdict == verdict, f"{key}: {relation.reason}"
         assert relation.box == box, f"{key}: 判出的箱是 {relation.box}，应为 {box}"
-        # 判不出箱时，任何「挑一个顶上」的做法都会得到错的费用
         if box is None:
             assert pkg.usable_as_box(
                 pkg.SpecReading("A", a_dims, a_lb),
                 pkg.SpecReading("B", b_dims, b_lb),
             ) is None
+
+
+# 11-23 13:51 报的五项分解。放在测试里而不是库里，是因为它同时是
+# 「这组数凭什么被接受」的证据——库里只存结果，存不了推演过程。
+CARTON_11_23 = {
+    "air_purifier": dict(
+        box=(17.52, 13.78, 7.48), gross=9.26, unit=(15.5, 12.0, 6.0), net=7.5, carton=1.76
+    ),
+    "electric_kettle": dict(
+        box=(6.69, 6.69, 3.74), gross=3.09, unit=(6.0, 5.0, 3.0), net=2.2, carton=0.89
+    ),
+}
+
+
+@pytest.mark.parametrize("key", ["air_purifier", "electric_kettle"])
+def test_the_new_carton_reading_is_self_consistent(key):
+    """两台新读数内部全部吻合：箱装得下、体积比合理、毛重拆得开。
+
+    两台的重量残差都是 **0.000 lb**（7.5+1.76=9.26、2.2+0.89=3.09），这不是巧合——
+    它说明报数的人是按同一台机器称的，不是拼了两台的数据。这是本轮唯一能自证的
+    东西，所以单独钉住。
+    """
+    d = CARTON_11_23[key]
+    verdict = pkg.verify_carton_reading(
+        pkg.CartonReading(
+            label=key,
+            box_dims_in=d["box"],
+            box_weight_lb=d["gross"],
+            unit_dims_in=d["unit"],
+            unit_weight_lb=d["net"],
+            carton_weight_lb=d["carton"],
+        )
+    )
+    assert verdict.verdict == pkg.SPEC_CARTON_CONSISTENT, verdict.reason
+    assert verdict.usable is True
+    assert verdict.weight_residual_lb == pytest.approx(0.0, abs=1e-9)
+    assert 1.2 < verdict.volume_ratio < 4.0
+    assert all(m > 0 for m in verdict.edge_margins_in)
+
+
+def test_the_old_carton_reading_fails_against_the_machine_size():
+    """11-21 记的净化器箱（24×15×15 / 18.5 lb）配上机器尺寸就崩，而且崩在两条上。
+
+    这是本轮最关键的一次推翻：那组数**单看毫无毛病**，只有引入机器尺寸才发现
+    它不可能是一台 15.5×12×6 的机器的彩盒。
+
+    | 判据 | 数值 | 结论 |
+    | --- | --- | --- |
+    | 箱/机体积比 | 4.84 倍（上限 4.0） | 像一箱多台 |
+    | 逐边余量 | 8.5 / 3 / 9 英寸 | 一台机器不需要这么空的箱 |
+    | 毛重 vs 净重+空箱重 | 18.5 vs 9.26，差 9.24 lb | 装的是别的东西 |
+
+    两个问题同时报（`problems` 有两条），因为改数的人需要一次看全：只报重量，
+    他会把毛重改成 9.26 而留着 24×15×15 的箱，还是错的。
+    """
+    verdict = pkg.verify_carton_reading(
+        pkg.CartonReading(
+            label="air_purifier(11-21)",
+            box_dims_in=(24.0, 15.0, 15.0),
+            box_weight_lb=18.5,
+            unit_dims_in=(15.5, 12.0, 6.0),
+            unit_weight_lb=7.5,
+            carton_weight_lb=1.76,
+        )
+    )
+    assert verdict.usable is False
+    assert verdict.problems == (
+        pkg.SPEC_CARTON_VOLUME_IMPLAUSIBLE,
+        pkg.SPEC_CARTON_WEIGHT_MISMATCH,
+    )
+    assert verdict.volume_ratio == pytest.approx(4.8387, abs=1e-3)
+    assert verdict.weight_residual_lb == pytest.approx(9.24, abs=0.005)
+
+
+def test_a_single_reading_without_the_machine_cannot_self_verify():
+    """只有箱三边 + 毛重时判不出对错——这是 11-21 那组数能活两天的原因。
+
+    缺项不等于通过：`carton_incomplete` 的 `usable` 必须是 False。
+    """
+    verdict = pkg.verify_carton_reading(
+        pkg.CartonReading(label="x", box_dims_in=(24.0, 15.0, 15.0), box_weight_lb=18.5)
+    )
+    assert verdict.verdict == pkg.SPEC_CARTON_INCOMPLETE
+    assert verdict.usable is False
+
+
+def test_unit_bigger_than_box_is_caught_before_weight():
+    """机器三边超出箱三边时先报这条——它是硬矛盾，重量对不上可能是它的后果。"""
+    verdict = pkg.verify_carton_reading(
+        pkg.CartonReading(
+            label="x",
+            box_dims_in=(10.0, 8.0, 6.0),
+            box_weight_lb=5.0,
+            unit_dims_in=(12.0, 8.0, 6.0),
+            unit_weight_lb=4.0,
+            carton_weight_lb=1.0,
+        )
+    )
+    assert verdict.verdict == pkg.SPEC_CARTON_UNIT_TOO_BIG
+    assert verdict.usable is False

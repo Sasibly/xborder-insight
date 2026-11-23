@@ -332,11 +332,17 @@ def test_measured_profile_collapses_to_single_point(tmp_path: Path):
 
 
 def test_repo_measured_profile_matches_what_was_measured():
-    """仓库里那份实测画像必须与 11-21 收到的四台一致，且口径是「包装后」。
+    """仓库里那份实测画像必须与收到的四台一致，且口径是「包装后」。
+
+    11-23 13:51 净化器与水壶按外箱分解重登（16.52→17.52 那组），旧的
+    24×15×15 / 10.5×9.2×8.4 已移入各自 variant 的 `superseded` 字段——
+    移动而不是删除，是为了让「当时按什么算的」还能查。
+
+    咖啡机与扫地机的两套读数仍互相矛盾（14.5↔15.98 lb、16.2↔31 lb），未获分解，
+    暂按原值，所以这两台在 §16 的数字仍然有效。
 
     H2-c 已于 11-21 关闭：四台的含锂判定都由用户给出（三台插电无电池、
-    扫地机 2600 mAh Li-ion）。机制没变——`unconfirmed_battery` 仍会列出
-    `battery_confirmed=false` 的行，只是这份档里现在没有这样的行。
+    扫地机 2600 mAh Li-ion）。
     """
     profile = prof.load_profile(prof.MEASURED_PROFILE_PATH)
     assert profile.measured
@@ -346,12 +352,10 @@ def test_repo_measured_profile_matches_what_was_measured():
         "electric_kettle",
         "robot_vacuum",
     ]
-    dims = {
-        c.key: c.variants[0].dims_in for c in profile.categories
-    }
-    assert dims["air_purifier"] == (24.0, 15.0, 15.0)
+    dims = {c.key: c.variants[0].dims_in for c in profile.categories}
+    assert dims["air_purifier"] == (17.52, 13.78, 7.48)
     assert dims["coffee_machine"] == (16.0, 13.0, 9.5)
-    assert dims["electric_kettle"] == (10.5, 9.2, 8.4)
+    assert dims["electric_kettle"] == (6.69, 6.69, 3.74)
     assert dims["robot_vacuum"] == (22.0, 18.0, 14.0)
 
     vacuum = next(c for c in profile.categories if c.key == "robot_vacuum")
@@ -365,7 +369,14 @@ def test_repo_measured_profile_matches_what_was_measured():
     )
 
     reports = prof.load_reports(prof.MEASURED_PROFILE_PATH)
-    assert all(r.bulky_quotable for r in reports), "四台都应收敛到小号大件，不该报缺"
+    assert all(r.bulky_quotable for r in reports), "四台都应报得出价"
+    # 净化器与水壶换了外箱后进了标准尺寸段（18/14/8 之内），不再是 bulky。
+    # 这不影响「报得出价」，但会换整张费率表——$23.84 → $11.35 就是这么来的。
+    fits = {r.spec.key: r.variants[0].fits for r in reports}
+    assert fits["air_purifier"] is True
+    assert fits["electric_kettle"] is True
+    assert fits["coffee_machine"] is False  # 9.5 > 8，仍是 bulky
+    assert fits["robot_vacuum"] is False
 
 
 # ---------------------------------------------------------------- 实测档（measured）

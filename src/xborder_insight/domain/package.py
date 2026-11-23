@@ -820,3 +820,176 @@ def usable_as_box(*readings: SpecReading) -> SpecReading | None:
     if relation.verdict != SPEC_BOX_VS_UNIT:
         return None
     return readings[0] if relation.box == readings[0].label else readings[1]
+
+
+# ------------------------------------------------ 一组读数能否自证
+#
+# 上一节判的是「两套读数谁是谁」。但还有更基本的一步：**一套读数本身对不对**。
+# 单看「17.52×13.78×7.48 / 9.26 lb」永远判不出对错——任何一个数单独看都可能。
+# 能自证的只有一件事：这组数内部彼此吻合。
+#
+# 四条可查的关系，全都不需要外部资料：
+#
+#   箱三边 ≥ 机三边            箱子装得下机器
+#   箱/机体积比 ≤ 4.0          一个箱装一台机器，不是一箱多台
+#   毛重 = 净重 + 空箱重       重量拆得开（容差 0.02 lb，约 9 克）
+#
+# 为什么要这一步：11-21 记的那组（净化器 24×15×15 / 18.5 lb）单看没有任何毛病，
+# 但配上机器尺寸就露了——箱体积是机器的 4.84 倍，三条边分别余出 8.5 / 3 / 9 英寸。
+# 那不是一台 15.5×12×6 的机器的彩盒，那是一箱装好几台、或者另一个型号的箱。
+# 没有机器尺寸，这个矛盾永远查不出来。
+
+#: 箱体积 / 机体积 的合理上界。超过它不再是「箱包着机」，而是「一箱多件」或混了型号。
+#: 4.0 对应每边留约 1 英寸再加大件泡沫；小件天然比例更大，所以这条只对中大型件
+#: 当判据用——低于下面的体积门槛时不套用（属于警告，不判错）。
+CARTON_TO_UNIT_VOLUME_MAX = 4.0
+
+#: 「中大型件」的门槛（机器体积，立方英寸）。
+CARTON_RATIO_APPLIES_ABOVE_IN3 = 500.0
+
+#: 毛重与「净重 + 空箱重」的容差（磅）。0.02 lb ≈ 9 g，是家用厨房秤的重复性误差。
+CARTON_WEIGHT_TOL_LB = 0.02
+
+SPEC_CARTON_CONSISTENT = "carton_consistent"
+SPEC_CARTON_UNIT_TOO_BIG = "carton_unit_too_big"
+SPEC_CARTON_WEIGHT_MISMATCH = "carton_weight_mismatch"
+SPEC_CARTON_VOLUME_IMPLAUSIBLE = "carton_volume_implausible"
+SPEC_CARTON_INCOMPLETE = "carton_incomplete"
+
+
+@dataclass(frozen=True)
+class CartonReading:
+    """一次完整的包装读数：外箱 + 机器 + 重量分解。
+
+    `box_dims_in` 与 `box_weight_lb` 必须有（没有箱就没法算 FBA）；其余三项给了才能自证。
+    `source` 写清是实测、供应商规格书还是商品页面——它不参与判定，但必须留痕。
+    """
+
+    label: str
+    box_dims_in: tuple[float, float, float]
+    box_weight_lb: float
+    unit_dims_in: tuple[float, float, float] | None = None
+    unit_weight_lb: float | None = None
+    carton_weight_lb: float | None = None
+    source: str = ""
+
+    @property
+    def box_volume_in3(self) -> float:
+        length, width, height = self.box_dims_in
+        return float(length * width * height)
+
+    @property
+    def unit_volume_in3(self) -> float | None:
+        if self.unit_dims_in is None:
+            return None
+        length, width, height = self.unit_dims_in
+        return float(length * width * height)
+
+
+@dataclass(frozen=True)
+class CartonVerdict:
+    """`usable` 只有一种情况为真：三条关系全部吻合。
+
+    一次报出全部问题（`problems`），不只报第一个。这组数通常是别人量完发过来的，
+    来回一轮就是一天；只报一个，会让人改完重量再被退回说体积也不对。
+    """
+
+    verdict: str
+    usable: bool
+    reason: str
+    problems: tuple[str, ...] = ()
+    volume_ratio: float | None = None
+    weight_residual_lb: float | None = None
+    edge_margins_in: tuple[float, float, float] | None = None
+
+
+def verify_carton_reading(reading: CartonReading) -> CartonVerdict:
+    """一套读数内部是否吻合。判据全在读数内部，不用外部资料。
+
+    不完整（缺机器三边、净重或空箱重）时返回 `carton_incomplete` 且 `usable=False`——
+    缺项不等于通过。这与 `usable_as_box` 在矛盾时返回 None 是同一条纪律。
+    """
+    if reading.box_volume_in3 <= 0 or reading.box_weight_lb <= 0:
+        raise InputInvalid(
+            f"读数 {reading.label!r} 的箱三边与毛重必须为正，收到 "
+            f"{reading.box_dims_in!r} / {reading.box_weight_lb!r}"
+        )
+
+    needed = (reading.unit_dims_in, reading.unit_weight_lb, reading.carton_weight_lb)
+    if any(value is None for value in needed):
+        missing = [
+            name
+            for name, value in zip(("机器三边", "机器净重", "空箱重"), needed, strict=True)
+            if value is None
+        ]
+        return CartonVerdict(
+            verdict=SPEC_CARTON_INCOMPLETE,
+            usable=False,
+            reason=f"缺 {'、'.join(missing)}，只能当单条读数用，无法自证",
+        )
+
+    unit_dims = reading.unit_dims_in
+    unit_lb = reading.unit_weight_lb
+    carton_lb = reading.carton_weight_lb
+    assert unit_dims is not None and unit_lb is not None and carton_lb is not None
+
+    box_sorted = sorted(reading.box_dims_in)
+    unit_sorted = sorted(unit_dims)
+    margins = tuple(
+        round(box - unit, 3) for box, unit in zip(box_sorted, unit_sorted, strict=True)
+    )
+    residual = reading.box_weight_lb - (unit_lb + carton_lb)
+    unit_volume = reading.unit_volume_in3
+    assert unit_volume is not None
+    ratio = reading.box_volume_in3 / unit_volume
+
+    problems: list[tuple[str, str]] = []
+    if any(margin < 0 for margin in margins):
+        problems.append(
+            (
+                SPEC_CARTON_UNIT_TOO_BIG,
+                f"机器三边 {unit_sorted} 超出箱三边 {box_sorted}，"
+                f"逐边余量 {margins} 有为负的——箱子装不下这台机器",
+            )
+        )
+    if unit_volume >= CARTON_RATIO_APPLIES_ABOVE_IN3 and ratio > CARTON_TO_UNIT_VOLUME_MAX:
+        problems.append(
+            (
+                SPEC_CARTON_VOLUME_IMPLAUSIBLE,
+                f"箱体积是机器的 {ratio:.2f} 倍（上限 {CARTON_TO_UNIT_VOLUME_MAX}），"
+                f"逐边余量 {margins} 英寸——不像一箱一台，更像一箱多台或混了型号",
+            )
+        )
+    if abs(residual) > CARTON_WEIGHT_TOL_LB:
+        problems.append(
+            (
+                SPEC_CARTON_WEIGHT_MISMATCH,
+                f"毛重 {reading.box_weight_lb} ≠ 净重 {unit_lb} + 空箱重 {carton_lb} "
+                f"= {unit_lb + carton_lb:.2f}，差 {residual:+.2f} lb",
+            )
+        )
+
+    if problems:
+        return CartonVerdict(
+            verdict=problems[0][0],
+            usable=False,
+            reason="；".join(text for _, text in problems),
+            problems=tuple(code for code, _ in problems),
+            volume_ratio=ratio,
+            weight_residual_lb=residual,
+            edge_margins_in=margins,
+        )
+
+    return CartonVerdict(
+        verdict=SPEC_CARTON_CONSISTENT,
+        usable=True,
+        reason=(
+            f"箱 {reading.box_volume_in3:.0f} in³ 装机器 {unit_volume:.0f} in³"
+            f"（{ratio:.2f} 倍），逐边余量 {margins} 英寸；"
+            f"毛重 = {unit_lb} + {carton_lb} = {reading.box_weight_lb}"
+            f"（差 {residual:+.3f} lb）"
+        ),
+        volume_ratio=ratio,
+        weight_residual_lb=residual,
+        edge_margins_in=margins,
+    )
