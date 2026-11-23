@@ -1,3 +1,3 @@
-﻿name,price,cogs,duty,fba,fba_ratio
-净化器-回价,79.99,,0.125,11.35,
-咖啡机-回价,63.99,,0.237,14.40,
+﻿name,price,cogs,duty,fba,fba_ratio,quote_fob,ref_fob,baseline_returns,stress_returns
+净化器-回价,79.99,,0.125,11.35,,32.50,28.00,0.12,0.17
+咖啡机-回价,63.99,,0.237,14.40,,18.50,20.00,0.08,0.15

@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from . import profit as p
 
@@ -504,3 +504,99 @@ def parse_rows(rows: list[dict[str, str]]) -> tuple[list[Candidate], list[RowPro
             )
         )
     return candidates, problems
+
+
+# ---------------------------------------------------------------------------
+# 退货率压测（`docs/04` §25）
+# ---------------------------------------------------------------------------
+#
+# 退货率是唯一一个「拿一个数、整条结论翻转」的参数：净化器 12% → 17% 掉 5.87 个点，
+# 咖啡机 8% → 15% 掉 8.3 个点。所以判定不能只看基线档——基线算出来好看，
+# 压力档转负，说明这个品的退货风险已经把利润吃掉了，再谈价也是白谈。
+#
+# 规则（用户 2026-11-23 16:37 定，写进代码而不是文档）：
+#   两档都为正 → 值得谈；压力档转负 → 换杠杆（箱规 / 售价），别在价格上花时间。
+# 「为正」取 0 而不是 15%：15% 是谈成之后的目标，不是「要不要谈」的门槛。
+# 门槛定在 15% 会把所有候选都挡在门外——因为基线档本来就不达标才需要谈价。
+
+
+@dataclass(frozen=True)
+class StressResult:
+    """两档退货率下的毛利与判定。数字与判定一起给，不让调用方自己比。"""
+
+    baseline_returns: float
+    stress_returns: float
+    baseline_margin: float
+    stress_margin: float
+
+    @property
+    def baseline_ok(self) -> bool:
+        return self.baseline_margin > 0
+
+    @property
+    def stress_ok(self) -> bool:
+        return self.stress_margin > 0
+
+    @property
+    def worth_negotiating(self) -> bool:
+        """两档都为正才值得谈价。压力档转负 → 不值得。"""
+        return self.baseline_ok and self.stress_ok
+
+    @property
+    def margin_drop_pts(self) -> float:
+        """压力档相对基线掉几个点（正数）。这是「退货风险的价钱」。"""
+        return (self.baseline_margin - self.stress_margin) * 100
+
+    @property
+    def cushion_pts(self) -> float:
+        """压力档毛利折成点数——压力档下的安全垫，越薄越危险。"""
+        return self.stress_margin * 100
+
+    @property
+    def label(self) -> str:
+        return "值得谈" if self.worth_negotiating else "不值得谈"
+
+    @property
+    def reason(self) -> str:
+        if self.worth_negotiating:
+            return (
+                f"压力档仍有 {self.stress_margin:.2%} 毛利"
+                f"（掉 {self.margin_drop_pts:.2f} 个点），退货风险没吃掉利润"
+            )
+        if not self.baseline_ok:
+            return (
+                f"基线档就已经是 {self.baseline_margin:.2%}，"
+                "先别谈价——谈成了也不赚，问题在采购价或箱规"
+            )
+        return (
+            f"压力档转负（{self.stress_margin:.2%}），退货风险已经吃掉利润；"
+            "换杠杆（箱规 / 售价），别在价格上花时间"
+        )
+
+
+def stress_test(candidate: Candidate, stress_returns: float) -> StressResult:
+    """基线档（`candidate.return_rate`）与压力档一起算，返回判定。
+
+    单独成函数而不是让调用方算两遍 `evaluate()`：判定规则本身是决策，
+    写在文档里只能读；写在代码里，改口径时 `tests/test_returns_stress.py` 会红。
+
+    压力档必须高于基线——反着传大概率是把两个参数写倒了，
+    静默按「压力档 = 基线」算会得到一条永远为正的结论。
+    """
+    if stress_returns <= candidate.return_rate:
+        raise AdmissionInputInvalid(
+            f"压力档退货率 {stress_returns:.2%} 必须高于基线 "
+            f"{candidate.return_rate:.2%}（两个参数可能写倒了）"
+        )
+    base = evaluate(candidate)
+    stressed = evaluate(replace(candidate, return_rate=stress_returns))
+    if base.gross_margin is None or stressed.gross_margin is None:
+        raise AdmissionInputInvalid(
+            "压测需要完整输入（两档毛利都算得出来）；缺项请先补齐，不会用默认值代替"
+        )
+    return StressResult(
+        baseline_returns=candidate.return_rate,
+        stress_returns=stress_returns,
+        baseline_margin=base.gross_margin,
+        stress_margin=stressed.gross_margin,
+    )

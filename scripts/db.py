@@ -703,6 +703,20 @@ def _dump_screen(args) -> int:
                     "  ! 毛利过了 15% 线、没过广告空间线：这个价谈成了也只能靠自然单，"
                     "广告投不出量（`docs/04` §10.4 / §15.5 同一口径）"
                 )
+    stress = None
+    if args.stress_returns is not None:
+        try:
+            stress = admission.stress_test(candidate, args.stress_returns)
+        except admission.AdmissionInputInvalid as exc:
+            print(f"[压测不成立] {exc}")
+            return 2
+        print(
+            f"  压测：基线 {stress.baseline_returns:.0%} → {stress.baseline_margin:.2%}"
+            f"　压力 {stress.stress_returns:.0%} → {stress.stress_margin:.2%}"
+            f"（掉 {stress.margin_drop_pts:.2f} 个点）"
+        )
+        print(f"    判定：{stress.label} —— {stress.reason}")
+
     for note in result.notes:
         print(f"  ! {note}")
 
@@ -1016,7 +1030,10 @@ def main(argv: list[str] | None = None) -> int:
     scr_parser.add_argument("--referral", type=float, default=admission.DEFAULT_REFERRAL,
                             help="佣金比例，默认 0.15（H1 未核实前用这个口径）")
     scr_parser.add_argument("--returns", type=float, default=admission.DEFAULT_RETURNS,
-                            help="退货率，默认 0.08（H3 未核实前用这个口径）")
+                            help="退货率（基线档），默认 0.08（H3 未核实前用这个口径）")
+    scr_parser.add_argument("--stress-returns", type=float, default=None,
+                            help="压测档退货率（如 0.17）。给了就一起算两档，"
+                                 "按「两档都为正才值得谈」出判定（docs/04 §25）")
     scr_parser.add_argument("--incoterm", default="FOB",
                             choices=("FOB", "DDP"), help="默认 FOB")
 
