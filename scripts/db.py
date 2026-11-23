@@ -72,7 +72,8 @@ def _dump_status(conn) -> int:
 
 def _dump_params(conn) -> int:
     info = coverage(conn)
-    ranged = {p.param_key: p for p in list_params(conn) if p.has_range}
+    allp = {p.param_key: p for p in list_params(conn)}
+    ranged = {p.param_key: p for p in allp.values() if p.has_range}
     print(f"成本参数核实进度  市场={info['marketplace']}")
     print("-" * 58)
     print(f"  总数 {info['total']} 项 · 已核实 {info['verified']} · 待核实 {info['draft']}")
@@ -83,11 +84,25 @@ def _dump_params(conn) -> int:
             suffix = f"   区间 {param.range_label}" if param else "   区间 全区间"
             print(f"    · {key}{suffix}")
     if info["missing_keys"]:
-        print("  待核实：")
-        for key in info["missing_keys"]:
-            print(f"    · {key}")
+        # 有值 ≠ 已核实：值只表示「查过或假设过」，状态仍是 draft。
+        # 分开打印是为了让「还没人去查」与「查了但缺生效日期」在输出里可区分。
+        filled = [
+            (key, allp[key].value)
+            for key in info["missing_keys"]
+            if key in allp and allp[key].value is not None
+        ]
+        empty = [key for key in info["missing_keys"] if key not in dict(filled)]
+        if filled:
+            print("  待核实 · 已填值（可读，但 require() 仍拒绝）：")
+            for key, value in filled:
+                print(f"    · {key:<32} = {value:g}")
+        if empty:
+            print("  待核实 · 未填值：")
+            for key in empty:
+                print(f"    · {key}")
     print(f"\n  已声明适用区间 {len(ranged)} 项 / 共 {info['total']} 项")
     print("\n注：未核实的参数无法被业务代码使用（require() 会抛 param_unverified）。")
+    print("    「已填值」只表示查过或有假设，状态仍是 draft——证据强度看 note。")
     print("    声明了区间的参数，若 require() 的 applied_to 越界会抛 param_out_of_range。")
     return 0
 

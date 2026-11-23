@@ -30,9 +30,25 @@ MARKET = "US"
 # 想让它变长，就得先在代码评审里解释清楚。
 VERIFIED_EXCEPTIONS = {"amazon.fba_fuel_surcharge"}
 
+#: draft 行允许带值，但 note 必须含下列之一，说明这个值是**哪一类**。
+#: 2026-11-23 引入：见 m0013 与改后的下面那条测试。
+VALUE_TAGS = ("官方", "市场", "假设", "阈值")
+
 
 def test_seeded_params_are_draft_except_documented_exceptions(conn):
-    """预置参数默认一律 draft；例外项必须有来源、生效日期、核实日期。"""
+    """预置参数默认一律 draft；例外项必须有来源、生效日期、核实日期。
+
+    2026-11-23 修订：draft **允许有值**，条件是 note 里写明这个值属于
+    「官方／市场／假设／阈值」哪一类。
+
+    为什么放宽：`m0013` 里有几项能查到官方原文（退款管理费 20%、仓储费 $0.78），
+    但官方页没写「生效日期」，CHECK 不允许升 verified。此时只有两种做法——
+    把值丢掉（等于假装没查过），或留着值并标清性质。选了后者。
+
+    防「为了演示好看偷偷塞数字」的意图没有被放弃，只是换了判据：
+    原来要求「值为空」，现在要求「值必须有解释」。真正那道闸在应用层——
+    `require()` 仍然拒绝一切 draft，库里有值也进不了计算。
+    """
     seeded = params.list_params(conn, MARKET)
     assert seeded, "种子数据不应为空，否则等于没声明要核实什么"
 
@@ -43,9 +59,15 @@ def test_seeded_params_are_draft_except_documented_exceptions(conn):
         if param.param_key in VERIFIED_EXCEPTIONS:
             assert param.value is not None
             assert param.source_url and param.effective_date and param.verified_at
-        else:
-            assert param.value is None, f"{param.param_key} 未核实却有值"
-            assert param.source_url is None
+        elif param.value is not None:
+            assert any(tag in param.note for tag in VALUE_TAGS), (
+                f"{param.param_key} 未核实却填了值，note 必须写明值的性质"
+                f"（{'/'.join(VALUE_TAGS)} 之一），当前 note：{param.note[:60]!r}"
+            )
+            # draft 可以带 source_url（指向官方页但缺生效日期），不能带生效日期——
+            # 有生效日期还能升 verified 却故意不升，那就不是「缺证据」而是「不打算认」
+            assert param.effective_date is None
+            assert param.verified_at is None
 
 
 def test_seeded_params_explain_what_to_verify(conn):
@@ -109,9 +131,11 @@ def test_db_rejects_verified_with_partial_provenance(conn):
 
 
 def test_db_rejects_verified_with_null_value(conn):
+    """verified 必须有值。显式把 value 置 NULL——m0013 之后该行可能已带 draft 值，
+    不置 NULL 的话这条测试测的就不是「缺值被拒」，而是「恰好没值」。"""
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "UPDATE cost_params SET status = 'verified', "
+            "UPDATE cost_params SET status = 'verified', value = NULL, "
             "source_url = 'https://example.invalid/x', "
             "effective_date = '2026-01-01', verified_at = '2026-11-17' "
             "WHERE param_key = 'amazon.referral_rate'"
