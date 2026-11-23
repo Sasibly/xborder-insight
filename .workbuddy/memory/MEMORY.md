@@ -17,6 +17,16 @@
 - 158 条新增抽取样本 + 77 簇聚类标注**未经人工复核前，对外不得称「人工标注」**。
 - 不爬亚马逊前台；只采信官方站点（Seller Central / USITC / CBP）。
 
+## 测试与交付纪律
+
+- **测试不许依赖不进版本库的文件**。`data/app.sqlite3` 在 `.gitignore` 里，早先 4 条 HTTP 测试
+  直接读它（本机跑过 `db.py up` 永远绿，干净克隆 4 条 503）。现由 `tests/conftest.py` 的
+  session autouse fixture `app_db_file` 提供隔离库，`test_api` 有守门测试钉住「不许指回工作区库」。
+- **「别人能跑」只能空目录 + 新 venv 真跑一次**，本机 `.venv` 全绿不算数（`docs/runbook.md` §13）。
+  演练前先确认目标目录里没有 `data/app.sqlite3`，否则等于没做。
+- 沙箱/CI 里 pytest 删旧临时根会触发 safe-delete 策略，命令被判失败但测试其实全绿：
+  用 `PYTEST_ADDOPTS="--basetemp=/tmp/pytest-xbi"`，不改仓库。
+
 ## 结构现状（易忘）
 
 - 迁移已到 **v12**；`db.py roundtrip` 是「up→down→up 指纹一致」的硬门槛。
