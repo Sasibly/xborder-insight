@@ -183,6 +183,19 @@ def decide(
         margin_observed = f"${profit.gross_profit:.2f}（{profit.gross_margin:.1%}）"
         margin_detail = f"毛利率 {profit.gross_margin:.1%}，高于假设下限 {MIN_GROSS_MARGIN:.0%}"
 
+    # 缺省成本项时，上面算出的是**上界**：每一项都只能增加成本，
+    # 所以真实毛利率一定不高于这个数。两种情况必须分开——
+    # 上界都不达标 → FAIL 可以直接采信（真实只会更差，不需要补齐就能否掉）；
+    # 上界达标     → 不能称 PASS，PASS 的语义是「已经确认可以」，而上界做不到这一点。
+    if profit.missing_inputs and margin_result == PASS:
+        margin_result = UNKNOWN
+        margin_detail = (
+            f"毛利率 {profit.gross_margin:.1%} 是把未指定的成本项"
+            f"（{'、'.join(profit.missing_labels)}）按 0 计入得到的**上界**，不是结论："
+            "这几项只要不为 0，毛利率就一定低于此值。补齐后才能判断是否达到 "
+            f"{MIN_GROSS_MARGIN:.0%}"
+        )
+
     reasons.append(
         Reason(
             factor="单件毛利",
@@ -252,6 +265,16 @@ def decide(
         acos_result = PASS
         acos_observed = f"盈亏平衡 ACOS {profit.breakeven_acos:.1%}"
         acos_detail = f"高于假设下限 {MIN_BREAKEVEN_ACOS:.0%}，具备投放空间"
+
+    # 同毛利：ACOS 在上界口径下达标 ≠ 确认可投。
+    # 「有毛利但投不出量」这件事在下界出现，而上界恰恰是最乐观的那一端。
+    if profit.missing_inputs and acos_result == PASS:
+        acos_result = UNKNOWN
+        acos_detail = (
+            f"盈亏平衡 ACOS {profit.breakeven_acos:.1%} 是按缺省成本项为 0 算出的上界；"
+            "成本补齐后 ACOS 只会更低，届时可能掉到 "
+            f"{MIN_BREAKEVEN_ACOS:.0%} 以下"
+        )
 
     reasons.append(
         Reason(
@@ -344,8 +367,18 @@ def _synthesize(
         return NO_GO, f"机会分 {opportunity_score:.2f} 不足以支撑投入"
 
     # 到这里没有确定性否决，剩下的都是「信息不足」。
-    # 需要区分是不是 FBA 尺寸重量导致的——因为补它的动作（量箱子）与补合规动作完全不同。
+    # 需要区分缺的是哪一类——因为补它的动作完全不同：
+    # 缺成本项要回去问供应商/报关行，缺尺寸重量要去量箱子。
     if margin.result == UNKNOWN or acos.result == UNKNOWN:
+        if profit.missing_inputs:
+            return (
+                NEED_MORE_INFO,
+                "成本项未指定（"
+                + "、".join(profit.missing_labels)
+                + "）：按 0 计入得到的是最乐观上界"
+                f"（毛利与盈亏平衡 ACOS 都是 {profit.gross_margin:.1%}）；"
+                "真实值只会更低，补齐这几项才能定论",
+            )
         return (
             NEED_MORE_INFO,
             "能不能做取决于包装后的尺寸与实重：毛利率区间 "

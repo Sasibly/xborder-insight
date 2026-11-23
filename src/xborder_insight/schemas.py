@@ -137,8 +137,13 @@ class CostProfileInput(BaseModel):
     quoted_price: float = Field(ge=0)
     selling_price: float = Field(gt=0)
 
-    inbound_freight: float = Field(default=0.0, ge=0)
-    duty_rate: float = Field(default=0.0, ge=0, le=1)
+    # 六项成本**没有默认值**：不填就是 None，不是 0。
+    # 之前它们是 `default=0.0`，于是「漏填」与「这项确实是 0」在契约层就分不出来——
+    # 咖啡机只填售价与采购价能算出 30.99%，补齐后是 6.90%（`docs/04` §14.3）。
+    # 现在不填只能是 None，模型据此知道算出来的是上界，并拒绝把它报成 GO
+    # （`docs/04` §31）。要声明「真的是 0」请显式写 0。
+    inbound_freight: float | None = Field(default=None, ge=0)
+    duty_rate: float | None = Field(default=None, ge=0, le=1)
 
     referral_rate: float = Field(ge=0, le=1)
 
@@ -163,15 +168,13 @@ class CostProfileInput(BaseModel):
     # 知道「包装不超过多大」但不知道精确三边时用这个：它直接约束体积重。
     package_volume_in3: float | None = Field(default=None, gt=0)
 
-    # 退货率。0.0 在 `H17` 闭合前同时表示「未指定」与「零退货」——
-    # 这是已知缺陷（`tests/test_profit_guardrails.py` 钉着），不在这里改：
-    # 改成必填会打坏「调用方立刻可用」这个前提。
+    # 退货率。None = 调用方没指定（模型按 0 计入，但结论最多到 NEED_MORE_INFO）。
     # 要用库里的两档（含压力档），改用 `DecisionRequest.sku_key`，两者互斥。
-    return_rate: float = Field(default=0.0, ge=0, le=1)
-    returns_handling_fee: float = Field(default=0.0, ge=0)
+    return_rate: float | None = Field(default=None, ge=0, le=1)
+    returns_handling_fee: float | None = Field(default=None, ge=0)
     returns_refund_admin_rate: float = Field(default=0.20, ge=0, le=1)
-    returns_goods_loss_ratio: float = Field(default=0.0, ge=0, le=1)
-    returns_inbound_loss_ratio: float = Field(default=0.0, ge=0, le=1)
+    returns_goods_loss_ratio: float | None = Field(default=None, ge=0, le=1)
+    returns_inbound_loss_ratio: float | None = Field(default=None, ge=0, le=1)
 
     incoterm: str | None = None
 
@@ -316,12 +319,11 @@ class DecisionRequest(BaseModel):
     def _returns_has_one_source(self) -> "DecisionRequest":
         """退货率只能有一个来源。
 
-        `cost.return_rate` 的默认值是 0.0，而 0.0 在这里同时表示「没指定」
-        （`H17` 未闭合前，schema 分不出「漏填」与「真的是零退货」，
-        见 `tests/test_profit_guardrails.py`）。所以判定用「非零」而不是
-        「字段是否存在」：0.0 当作没指定，交给 `sku_key` 走库。
+        判定用「是不是 None」而不是「是不是 0」——`cost.return_rate` 现在
+        没有默认值，None 就真的是「没给」，0.0 就真的是「零退货」，
+        两者不再共用同一个值（H17，`docs/04` §31）。
         """
-        if self.sku_key is not None and self.cost.return_rate != 0.0:
+        if self.sku_key is not None and self.cost.return_rate is not None:
             raise ValueError(
                 "sku_key 与 cost.return_rate 不能同时给：退货率只有一个来源。"
                 "给了 sku_key 就以 product_returns 里的两档为准（基线 + 压力档）；"

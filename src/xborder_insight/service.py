@@ -25,11 +25,12 @@ from .schemas import DecisionRequest
 
 def _resolve_returns(
     conn: sqlite3.Connection, payload: DecisionRequest
-) -> tuple[float, returns_db.ProductReturn | None]:
+) -> tuple[float | None, returns_db.ProductReturn | None]:
     """退货率从哪来：库里的两档，还是调用方自己给的基线。
 
     优先级只有两档，因为契约层已经把「两个都填」挡在 422：
-    给了 `sku_key` 就一定走库，没给就用 `cost.return_rate`。
+    给了 `sku_key` 就一定走库，没给就用 `cost.return_rate`（可能仍是 None =
+    调用方没指定，此时模型按 0 计入并把结论降级成上界，见 `docs/04` §31）。
 
     走到库这一档时，`require()` 找不到行会抛 `ReturnRateMissing`（503）——
     这是「没有这一台」，不是「有但没核实」。draft 行照常返回，证据强弱
@@ -43,7 +44,7 @@ def _resolve_returns(
 
 def _returns_block(
     record: returns_db.ProductReturn | None,
-    rate: float,
+    rate: float | None,
     stress: admission_mod.StressResult | None,
 ) -> dict[str, object]:
     """响应的 `returns` 块。字段在两种模式下**同名同义**，客户端不必分支。
@@ -54,7 +55,7 @@ def _returns_block(
     """
     block: dict[str, object] = {
         "source": "product_returns" if record is not None else "explicit",
-        "rate": round(rate, 6),
+        "rate": None if rate is None else round(rate, 6),
         "sku_key": None if record is None else record.sku_key,
         "evidence": None,
         "missing_evidence": [],
@@ -212,5 +213,24 @@ def decide(conn: sqlite3.Connection, payload: DecisionRequest) -> dict:
         # 所以这个判定是「最坏尺寸重量 + 压力档退货率」下的判定——
         # 最保守的那个组合，结论为真时可以直接采信。
     body["returns"] = _returns_block(record, return_rate, stress)
-    body["warnings"] = list(_return_warnings(record, stress, str(body["verdict"])))
+    body["warnings"] = list(_cost_warnings(profit_result)) + list(
+        _return_warnings(record, stress, str(body["verdict"]))
+    )
     return body
+
+
+def _cost_warnings(profit_result: profit_mod.ProfitResult) -> tuple[str, ...]:
+    """成本项缺省时，把「算出来的是上界」提到顶层。
+
+    只写在 `profit.warnings` 里不够：那份列表是按字段逐条列的，
+    读结论的人（尤其是只看 `verdict` 与 `warnings` 的）会漏掉
+    「这个毛利率本身不可当作结论用」这层意思。
+    """
+    if not profit_result.missing_inputs:
+        return ()
+    return (
+        "成本项未指定："
+        + "、".join(profit_result.missing_labels)
+        + "——本次按 0 计入，得到的是最乐观上界；"
+        "结论最多到 NEED_MORE_INFO，补齐后才可能给出 GO",
+    )

@@ -108,17 +108,35 @@ class CostInputs:
 
     quoted_price: float
     selling_price: float
-    inbound_freight: float
-    duty_rate: float
+    # 以下六项都接受 None = 「调用方没指定」，与 0.0 = 「这一项真的是 0」分开。
+    # 之前它们都是 `float = 0.0`，于是漏填和零成本在模型里长得一模一样：
+    # 咖啡机只填售价与采购价能算出 30.99%，补齐三项后是 6.90%
+    # （`docs/04` §14.3），而中间那条路径不报错、不告警。
+    # 现在漏填只能是 None，模型据此知道「这个数是上界，不是结论」——
+    # 见 `missing_inputs` 与 `decision` 里「上界不得称 PASS」的规则。
+    inbound_freight: float | None
+    duty_rate: float | None
     referral_rate: float
     fba_fee: float | None
-    return_rate: float
-    returns_handling_fee: float
+    return_rate: float | None
+    returns_handling_fee: float | None
     returns_refund_admin_rate: float
-    returns_goods_loss_ratio: float
-    returns_inbound_loss_ratio: float
+    returns_goods_loss_ratio: float | None
+    returns_inbound_loss_ratio: float | None
     incoterm: str | None = None
     fba_bounds: tuple[float, float] | None = None
+
+
+#: 可缺省成本项的中文名。对外文案（warning / reasons）只引用这张表，
+#: 免得同一个字段在三处被叫成三个名字。
+FIELD_LABELS: dict[str, str] = {
+    "inbound_freight": "头程运费",
+    "duty_rate": "关税税率",
+    "return_rate": "退货率",
+    "returns_handling_fee": "退货处理费",
+    "returns_goods_loss_ratio": "退货商品损失比例",
+    "returns_inbound_loss_ratio": "退货头程沉没比例",
+}
 
 
 @dataclass(frozen=True)
@@ -148,6 +166,16 @@ class ProfitResult:
     gross_margin_high: float = 0.0
     assumptions: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    #: 调用方没指定、本次按 0 计入的成本项（字段名，见 `FIELD_LABELS`）。
+    #:
+    #: **非空时 `gross_margin` 是上界而不是结论**：每一项都只能增加成本，
+    #: 所以真实毛利率一定不高于这里算出的值。这条单调性正是 `decision`
+    #: 敢把「上界达标」降级成 NEED_MORE_INFO、却保留「上界都不达标 → NO_GO」的依据。
+    missing_inputs: tuple[str, ...] = ()
+
+    @property
+    def missing_labels(self) -> tuple[str, ...]:
+        return tuple(FIELD_LABELS.get(key, key) for key in self.missing_inputs)
 
     @property
     def fba_range_usd(self) -> tuple[float, float]:
@@ -186,6 +214,7 @@ class ProfitResult:
             "breakeven_reason": self.breakeven_reason,
             "freight_included_in_quote": self.freight_included_in_quote,
             "duty_included_in_quote": self.duty_included_in_quote,
+            "missing_inputs": list(self.missing_inputs),
             "assumptions": list(self.assumptions),
             "warnings": list(self.warnings),
         }
@@ -212,7 +241,26 @@ def compute(inputs: CostInputs) -> ProfitResult:
     if quoted_price < 0:
         raise InputInvalid(f"报价不能为负，当前值: {quoted_price}")
 
-    return_rate = _check_finite("退货率", inputs.return_rate)
+    # 六项可缺省的输入：None 表示调用方没指定，与 0.0 分开记。
+    # 记进 `missing` 而不是直接抛错，是因为「先能算」与「算出来的数是什么性质」
+    # 是两件事：调用方在报价阶段确实可能还没拿到头程，此时拒绝服务没有意义，
+    # 有意义的是把结论降级成「上界」并说清缺什么（`decision` 那侧做）。
+    missing: list[str] = []
+
+    def _optional(name: str, value: float | None, *, matters: bool = True) -> float:
+        """None = 未指定：按 0 计入，并记进 `missing`。
+
+        `matters=False` 用于「乘出来必然是 0」的项（退货率为 0 时，
+        三项退货参数乘上去都是 0）。缺它们不影响任何数字，
+        记成 missing 只会把完整输入误判成信息不足。
+        """
+        if value is None:
+            if matters:
+                missing.append(name)
+            return 0.0
+        return _check_finite(FIELD_LABELS.get(name, name), value)
+
+    return_rate = _optional("return_rate", inputs.return_rate)
     if not (-_EPS <= return_rate <= 1 + _EPS):
         raise InputInvalid(
             f"退货率必须在 [0, 1] 区间，当前值: {return_rate}"
@@ -221,13 +269,8 @@ def compute(inputs: CostInputs) -> ProfitResult:
     return_rate = min(max(return_rate, 0.0), 1.0)
 
     for name, value in (
-        ("头程运费", inputs.inbound_freight),
-        ("关税税率", inputs.duty_rate),
         ("佣金率", inputs.referral_rate),
-        ("退货处理费", inputs.returns_handling_fee),
         ("退款管理费率", inputs.returns_refund_admin_rate),
-        ("商品损失比例", inputs.returns_goods_loss_ratio),
-        ("头程沉没比例", inputs.returns_inbound_loss_ratio),
     ):
         if _check_finite(name, value) < 0:
             raise InputInvalid(f"{name} 不能为负，当前值: {value}")
@@ -254,17 +297,30 @@ def compute(inputs: CostInputs) -> ProfitResult:
             f"{code} 报价已含头程运费，本次不再单独计入头程"
             "（若重复计入会低估毛利）"
         )
-        if inputs.inbound_freight > 0:
+        # 含运费术语下没给头程不是缺失——报价里已经有了。
+        # 这正是「缺省」必须由模型判断而不是由 schema 一刀切的原因。
+        if inputs.inbound_freight is not None and inputs.inbound_freight > 0:
             warnings.append(
                 f"{code} 下收到非零头程 {inputs.inbound_freight:.2f}，已置零以避免重复计费；"
                 "若报价确未含运费，请改用 FOB/EXW 口径"
             )
     else:
-        freight = _check_finite("头程运费", inputs.inbound_freight)
-        if freight == 0:
+        if inputs.inbound_freight is None:
+            freight = 0.0
+            missing.append("inbound_freight")
             warnings.append(
-                f"{code} 报价通常不含运费，但头程为 0——请确认是卖家包邮还是漏填"
+                f"{code} 报价不含运费，但调用方未指定头程（inbound_freight），"
+                "本次按 $0 计入——这是最乐观口径，真实毛利率只会更低"
             )
+        else:
+            freight = _check_finite("头程运费", inputs.inbound_freight)
+            if freight < 0:
+                raise InputInvalid(f"头程运费不能为负，当前值: {freight}")
+            if freight == 0:
+                warnings.append(
+                    f"{code} 报价通常不含运费，但头程为 0——"
+                    "若这是显式声明的零运费则无需处理，否则请补上真实值"
+                )
 
     if t.duty_included:
         duty = 0.0
@@ -272,13 +328,24 @@ def compute(inputs: CostInputs) -> ProfitResult:
             f"{code} 报价已含进口关税，本次不再叠加关税项；"
             "该口径成立的前提是报价确为完税价"
         )
-        if inputs.duty_rate > 0:
+        if inputs.duty_rate is not None and inputs.duty_rate > 0:
             warnings.append(
                 f"{code} 下收到非零关税税率 {inputs.duty_rate:.4f}，已置零以避免重复计税；"
                 "若报价实际未含税，请改用 FOB 口径"
             )
     else:
-        duty = quoted_price * _check_finite("关税税率", inputs.duty_rate)
+        if inputs.duty_rate is None:
+            duty = 0.0
+            missing.append("duty_rate")
+            warnings.append(
+                f"{code} 报价未含关税，但调用方未指定税率（duty_rate），"
+                "本次按 0 计入——这是最乐观口径，真实毛利率只会更低"
+            )
+        else:
+            duty_rate_value = _check_finite("关税税率", inputs.duty_rate)
+            if duty_rate_value < 0:
+                raise InputInvalid(f"关税税率不能为负，当前值: {duty_rate_value}")
+            duty = quoted_price * duty_rate_value
         assumptions.append(
             f"关税按 {code} 口径计征，计税基础取申报价值（即报价），"
             "未将运费与保险并入完税价格"
@@ -336,17 +403,30 @@ def compute(inputs: CostInputs) -> ProfitResult:
         inputs.returns_refund_admin_rate * referral_fee, REFUND_ADMIN_CAP_USD
     )
 
+    # 三项退货参数只在退货率非零时才有影响：退货率为 0 时它们乘上去都是 0，
+    # 此时把它们算作「缺失」会把一份完整输入误判成信息不足。
+    returns_matter = return_rate > 0
+    handling_fee = _optional(
+        "returns_handling_fee", inputs.returns_handling_fee, matters=returns_matter
+    )
+    goods_loss_ratio = _optional(
+        "returns_goods_loss_ratio", inputs.returns_goods_loss_ratio, matters=returns_matter
+    )
+    inbound_loss_ratio = _optional(
+        "returns_inbound_loss_ratio", inputs.returns_inbound_loss_ratio, matters=returns_matter
+    )
+
     returns = ReturnsLoss(
         # 退款冲减收入：退货率 r 意味着 r 比例的交易被撤销，收入本身要退回去。
         # 这一项不是「费用」，是「这笔钱没收到」，所以必须与下面四项分列。
         revenue_reversal=return_rate * selling_price,
-        handling=return_rate * inputs.returns_handling_fee,
+        handling=return_rate * handling_fee,
         # 基数是「原佣金」：平台退佣金时扣留的那部分，按售价取比例会放大一个数量级
         refund_admin=return_rate * refund_admin_per_return,
-        goods=return_rate * inputs.returns_goods_loss_ratio * quoted_price,
+        goods=return_rate * goods_loss_ratio * quoted_price,
         # 基数是「实际计入的头程」：术语已含运费时为 0，
         # 因为那部分沉没成本已包含在报价里，单独再加就是重复计
-        inbound=return_rate * inputs.returns_inbound_loss_ratio * freight,
+        inbound=return_rate * inbound_loss_ratio * freight,
     )
 
     if refund_admin_per_return >= REFUND_ADMIN_CAP_USD - _EPS:
@@ -422,4 +502,5 @@ def compute(inputs: CostInputs) -> ProfitResult:
         gross_margin_high=gross_margin_high,
         assumptions=tuple(assumptions),
         warnings=tuple(warnings),
+        missing_inputs=tuple(missing),
     )

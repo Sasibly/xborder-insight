@@ -1,28 +1,40 @@
-"""护栏：为什么「补一个 profit CLI」不能先做。
+"""护栏：利润模型不许把「没给」当成「是 0」。
 
-11-21 定下的下一步是「先等售价再补 `profit` 命令」。这些测试把那条决定的
-**技术依据**钉住，免得下次有人觉得「代码都在，加个 argparse 就完事」。
+11-21 的判断是「先等数，别急着补 profit CLI」：`CostProfileInput` 里六项成本
+都有默认值 0，于是漏填与「这一项真的是 0」在模型里长得一模一样——
+咖啡机只填售价与采购价能算出 **30.99%**，补齐三项后是 **6.90%**（`docs/04` §14.3），
+中间那条路径不报错、不告警。
 
-事实链条是这样的：
+11-23 按 `H17` 落地：六项改成 `float | None = None`，漏填有了独立的表示。
+模型据此知道「算出来的毛利率是上界」，并拒绝把它报成 GO（`docs/04` §31）。
 
-1. `profit.compute()` 是纯函数，API 侧已经接通；缺的从来不是代码。
-2. `CostProfileInput` 里 `inbound_freight` / `duty_rate` / `return_rate` /
-   `returns_handling_fee` / `returns_goods_loss_ratio` / `returns_inbound_loss_ratio`
-   都有默认值 0（`returns_refund_admin_rate` 默认 0.20）。
-   默认值本身没写错，错的是它让「漏填」和「这一项确实是 0」长得完全一样。
-3. 于是只要有人写个 CLI 把命令行参数直接倒进 schema，第一个用它的人
-   只会填售价和采购价，然后拿到一个「看起来正常」的毛利率——不报错、不告警。
-
-下面两条测试分别锁「漏填 ≡ 零成本」和「差值有多大」。
-差值那条不是精确值断言（改费率表会变），它断言的是**方向与量级**：
-同一件货补上三个数就从 GO 翻到 NO_GO。
+这一组锁的是**算术没变、表态变了**：同一份输入补齐与不补齐，
+毛利率数值可以一样，但 `missing_inputs` 与结论必须不同。
+单看数字看不出来的那条差异，正是这组测试存在的理由。
 """
 
 from __future__ import annotations
 
+import pytest
+
 from xborder_insight.domain import decision as decision_mod
 from xborder_insight.domain import profit as profit_mod
+from xborder_insight.domain.compliance import STATUS_CLEAR, RuleHit, WARNING, evaluate
+from xborder_insight.domain.decision import NEED_MORE_INFO, NO_GO
 from xborder_insight.schemas import CostProfileInput
+
+CLEAR = evaluate([RuleHit("x", "w", WARNING, "verified", "https://e.gov")], "c", "US")
+
+#: 六项可缺省的输入。列在这里而不是逐个写死，是为了以后加字段时
+#: 「哪些项算缺失」这件事只需要改一处。
+OPTIONAL_FIELDS = (
+    "inbound_freight",
+    "duty_rate",
+    "return_rate",
+    "returns_handling_fee",
+    "returns_goods_loss_ratio",
+    "returns_inbound_loss_ratio",
+)
 
 
 def _inputs_from(profile: CostProfileInput) -> profit_mod.CostInputs:
@@ -43,11 +55,23 @@ def _inputs_from(profile: CostProfileInput) -> profit_mod.CostInputs:
     )
 
 
-def test_omitted_cost_fields_are_indistinguishable_from_declared_zero():
-    """漏填三项 ≠ 这三项是 0，但模型分不出来——这就是不能急着做 CLI 的原因。
+def _decide(profile: CostProfileInput, score: float = 0.66):
+    return decision_mod.decide(
+        profit_mod.compute(_inputs_from(profile)),
+        CLEAR,
+        score,
+        data_provenance="test",
+    )
 
-    若哪天有人把这几项改成必填（`Field(...)`），这条测试会失败。
-    那时应该做的不是改测试，而是先确认 H17 拍过板。
+
+# ---------- 核心：漏填与显式 0 从此可分辨 ----------
+
+
+def test_omitted_fields_are_recorded_as_missing_not_silently_zero():
+    """两个模型的毛利仍然相等（算术没动），但缺失记录与告警必须不同。
+
+    这条用例的前身断言的是「两条路径完全相同」——那是缺陷的描述，
+    不是需求的描述。H17 之后反过来：数值可以相同，**状态不能相同**。
     """
     omitted = CostProfileInput(
         quoted_price=18.0, selling_price=59.99, referral_rate=0.15, fba_fee=14.40
@@ -63,23 +87,25 @@ def test_omitted_cost_fields_are_indistinguishable_from_declared_zero():
     )
     a = profit_mod.compute(_inputs_from(omitted))
     b = profit_mod.compute(_inputs_from(declared))
-    assert a.gross_profit == b.gross_profit
-    assert a.gross_margin == b.gross_margin
-    # 两条路径都不告警：漏填不会在输出里留下任何痕迹
-    assert a.warnings == b.warnings
+
+    # 算术上仍然按 0 计——不因为「没给」就拒绝算，调用方在报价阶段确实可能还没有头程
+    assert a.gross_margin == b.gross_margin == pytest.approx(a.gross_margin)
+    # 但状态分开了
+    assert set(a.missing_inputs) == {"inbound_freight", "duty_rate", "return_rate"}
+    assert b.missing_inputs == ()
+    assert a.warnings != b.warnings
+    assert any("未指定" in w for w in a.warnings)
+    assert "missing_inputs" in a.as_dict()
 
 
-def test_three_missing_numbers_flip_the_verdict_from_go_to_no_go():
-    """咖啡机实测 FBA $14.40：只填售价与采购价 → GO；补三个数 → NO_GO。
+def test_missing_fields_make_the_margin_an_upper_bound_not_a_verdict():
+    """上界达标不能报 GO；补齐后同一件货是 NO_GO。
 
-    三个数是头程 $2.50/件、关税 35%、退货率 8%（含处理费 $3/件、商品损失 30%、
-    头程沉没 20%）。前两项属 H3/H8，第三项属 H3——都还没给。
+    这就是 §14.3 那张表里 30.99% → 6.90% 的路径。以前第一步直接是 GO。
     """
     thin = CostProfileInput(
         quoted_price=18.0, selling_price=59.99, referral_rate=0.15, fba_fee=14.40
     )
-    thin_result = profit_mod.compute(_inputs_from(thin))
-
     full = CostProfileInput(
         quoted_price=18.0,
         selling_price=59.99,
@@ -87,24 +113,90 @@ def test_three_missing_numbers_flip_the_verdict_from_go_to_no_go():
         fba_fee=14.40,
         incoterm="FOB",
         inbound_freight=2.50,
-        duty_rate=0.35,
+        duty_rate=0.237,
         return_rate=0.08,
         returns_handling_fee=3.0,
         returns_goods_loss_ratio=0.30,
         returns_inbound_loss_ratio=0.20,
     )
-    full_result = profit_mod.compute(_inputs_from(full))
 
-    assert thin_result.gross_margin >= decision_mod.MIN_GROSS_MARGIN
-    assert full_result.gross_margin < decision_mod.MIN_GROSS_MARGIN
-    # 量级断言：不是「差一点点」，是差二十个点以上
-    assert thin_result.gross_margin - full_result.gross_margin > 0.20
+    thin_result = _decide(thin)
+    full_result = _decide(full)
+
+    assert thin_result.verdict == NEED_MORE_INFO
+    assert "未指定" in thin_result.headline
+    assert full_result.verdict == NO_GO
+    # 数值上的差距没变：不是「差一点点」，是二十个点以上
+    assert thin_result.profit.gross_margin - full_result.profit.gross_margin > 0.20
 
 
-def test_zero_freight_under_fob_is_warned_but_never_blocked():
-    """默认 0 至少会在 FOB 下留一句告警——这是现有护栏的全部。
+def test_fail_on_the_optimistic_end_is_still_a_fail():
+    """缺省只会让成本更低，所以「上界都亏」可以直接否掉，不必等补齐。
 
-    它挡不住「用了默认值」这件事本身，只说明「我记得提一句」。
+    方向不对称是本设计的关键：补齐任何一项都只会让毛利变差。
+    这条性质让 FAIL 可以保留、PASS 必须降级——不是随口定的规则。
+    """
+    hopeless = CostProfileInput(
+        quoted_price=28.0, selling_price=29.99, referral_rate=0.15, fba_fee=6.0
+    )
+    result = _decide(hopeless)
+    assert result.profit.missing_inputs  # 确实缺着东西
+    assert result.verdict == NO_GO
+
+
+def test_every_missing_field_can_only_lower_the_margin():
+    """单调性：把任一项从「未指定」改成非零，毛利率只会下降。
+
+    这条是上面那条「FAIL 可以保留」的前提。若哪天有某项反向影响毛利
+    （比如某种补贴要按比例加回），这个测试会红——那时上界论证就得重写。
+    """
+    base = dict(
+        quoted_price=18.0,
+        selling_price=59.99,
+        referral_rate=0.15,
+        fba_fee=14.40,
+        incoterm="FOB",
+    )
+    empty = profit_mod.compute(
+        _inputs_from(CostProfileInput(**base))
+    ).gross_margin
+
+    additions = {
+        "inbound_freight": 2.50,
+        "duty_rate": 0.237,
+        "return_rate": 0.08,
+        "returns_handling_fee": 3.0,
+    }
+    for field, value in additions.items():
+        filled = profit_mod.compute(_inputs_from(CostProfileInput(**base, **{field: value})))
+        assert filled.gross_margin <= empty, f"{field} 填上之后毛利反而升高了"
+
+
+# ---------- 术语与前提：不是所有字段在所有口径下都「必须有」 ----------
+
+
+def test_ddp_does_not_count_freight_or_duty_as_missing():
+    """DDP 报价已含运费与关税，没给这两项不是缺失，是口径本身。
+
+    缺失判断必须由模型做（它知道术语语义），不能在 schema 里一刀切。
+    """
+    profile = CostProfileInput(
+        quoted_price=18.0,
+        selling_price=59.99,
+        referral_rate=0.15,
+        fba_fee=14.40,
+        incoterm="DDP",
+        return_rate=0.0,
+    )
+    result = profit_mod.compute(_inputs_from(profile))
+    assert result.missing_inputs == ()
+    assert result.freight == 0.0 and result.duty == 0.0
+
+
+def test_return_ratios_are_only_required_when_there_are_returns():
+    """退货率为 0（显式声明）时，三项退货参数乘上去都是 0，缺了不算缺失。
+
+    否则一份完整输入会被判成信息不足——把「严格」做成了「误伤」。
     """
     profile = CostProfileInput(
         quoted_price=18.0,
@@ -112,7 +204,59 @@ def test_zero_freight_under_fob_is_warned_but_never_blocked():
         referral_rate=0.15,
         fba_fee=14.40,
         incoterm="FOB",
+        inbound_freight=2.50,
+        duty_rate=0.237,
+        return_rate=0.0,
     )
     result = profit_mod.compute(_inputs_from(profile))
+    assert result.missing_inputs == ()
+
+    # 反过来：退货率非零时，这三项真的会影响数字，缺了必须记
+    with_returns = CostProfileInput(
+        quoted_price=18.0,
+        selling_price=59.99,
+        referral_rate=0.15,
+        fba_fee=14.40,
+        incoterm="FOB",
+        inbound_freight=2.50,
+        duty_rate=0.237,
+        return_rate=0.08,
+    )
+    assert set(profit_mod.compute(_inputs_from(with_returns)).missing_inputs) == {
+        "returns_handling_fee",
+        "returns_goods_loss_ratio",
+        "returns_inbound_loss_ratio",
+    }
+
+
+def test_explicit_zero_freight_is_still_warned_but_never_blocked():
+    """显式声明「零运费」是合法的，只留一句告警。
+
+    告警不等于拦住，这一点没变：调用方说了是 0，系统没有资格替他改，
+    但必须让读报告的人看到这个 0 是他的声明而不是系统的默认值。
+    """
+    profile = CostProfileInput(
+        quoted_price=18.0,
+        selling_price=59.99,
+        referral_rate=0.15,
+        fba_fee=14.40,
+        incoterm="FOB",
+        inbound_freight=0.0,
+        duty_rate=0.237,
+        return_rate=0.0,
+    )
+    result = profit_mod.compute(_inputs_from(profile))
+    assert result.missing_inputs == ()
     assert any("头程为 0" in w for w in result.warnings)
     assert result.gross_profit > 0  # 告警不等于拦住
+
+
+def test_schema_keeps_no_default_for_the_six_optional_costs():
+    """契约层的守卫：这六项一旦被改回 `default=0.0`，本用例立刻红。
+
+    守住的是「形状」而不是某条业务结论——补默认值在任何单条结论上都看不出差别，
+    只有看字段定义才看得出来。
+    """
+    fields = CostProfileInput.model_fields
+    for name in OPTIONAL_FIELDS:
+        assert fields[name].default is None, f"{name} 又有默认值了：漏填会重新变成 0"

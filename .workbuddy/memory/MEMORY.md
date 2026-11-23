@@ -21,6 +21,13 @@
 - 参数状态只有 `draft` / `verified`；`verified` 必须有 来源 + 生效日期 + 核实日期，写在 CHECK 里。
 - 查不到就保持 draft，**禁止用「大概 15%」这类印象值**。填错的数比没有数危险。
 - 缺失 ≠ 通过：合规规则未覆盖或未核实一律 `unknown`，不得降级成 `clear`。
+- **六项成本不填就是 `None`，不是 0**（11-23 19:40，H17 收口）：`inbound_freight` /
+  `duty_rate` / `return_rate` / `returns_handling_fee` / 两个损失比例。漏填按 0 计入
+  但记 `missing_inputs`，**算出来的毛利率是上界，上界达标不得称 PASS**（→ NEED_MORE_INFO），
+  只有上界不达标才保留 NO_GO。依据是单调性：六项只增加成本。
+  **别再给这几个字段补默认值 0**，`test_schema_keeps_no_default_for_the_six_optional_costs` 会红。
+  「缺不缺」按口径判断：DDP 下头程/关税不算缺、退货率为 0 时三项退货参数不算缺。
+  详见 `docs/04` §31；护栏 `tests/test_profit_guardrails.py`（8 条）。
 - 158 条新增抽取样本 + 77 簇聚类标注**未经人工复核前，对外不得称「人工标注」**。
 - **AI 设定值必须标「设定」不标「核实」**：用户授权代填的数一律保持 `draft`，
   文档里写明「AI 设定 / 非核实 + 依据」，并给出替换条件（哪一页一读就能定死）。
@@ -46,7 +53,10 @@
   唯一键是内部 `sku_key`（不是 ASIN——只有咖啡机有 ASIN），ASIN 可空。
   证据四档：`backend_read`/`official_page` 可升 verified，`category_threshold`/`estimate`
   由 CHECK 永久挡在 draft（净化器是前者：读到的是类目阈值，不是该 ASIN 均值）。
-  **仍欠 API**：决策接口只读 `cost_params.returns.rate`，别以为已在线生效。
+  **API 已接（11-23 19:25）**：`DecisionRequest.sku_key` 走表，响应多 `returns` 块
+  （基线/压力档毛利 + `worth_negotiating` + 证据四档 + `missing_evidence`），
+  未登记 → 503 `return_rate_missing`。**与 `cost.return_rate` 互斥（422）**——
+  两档必须同源，否则差值无意义。互斥判定看 **None**（19:40 起），不再看「非零」。
 - **FOB 公允参考价是内部锚**：只用来判断对方报价离不离谱，**绝不对供应商说出口**。
   开口价 = max(20% 线, 公允 × 0.85)——低于公允 15% 以上的报价不会被当回事。
   20% 线单独用会给出「没人理的开价」（净化器 $20.89 = 公允 −25.4%）。

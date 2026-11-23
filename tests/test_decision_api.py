@@ -187,3 +187,90 @@ def test_same_request_same_response(client):
     first = _post(client, VALID).json()
     second = _post(client, VALID).json()
     assert first == second
+
+
+# ---------- 缺省成本项：算出来的是上界，不得称 PASS（docs/04 §31） ----------
+#
+# H17 之前，`cost` 里六项成本都有默认值 0，漏填与「这一项真的是 0」在契约层
+# 就分不出来。咖啡机只填售价与采购价能算出 30.99%，补齐三项后是 6.90%，
+# 而中间那条路径一路 200、不报错。现在漏填是 None，接口必须自己说出来。
+
+
+#: 只填「报价阶段一定有的那两个数」。这是最容易发生的一种调用。
+THIN_COST = {
+    "quoted_price": 18.00,
+    "selling_price": 59.99,
+    "referral_rate": 0.15,
+    "fba_fee": 14.40,
+}
+
+
+def test_omitted_cost_fields_are_named_in_the_response(client):
+    """漏填要能被看见：字段名进 `missing_inputs`，一句人话进顶层 warnings。
+
+    不是「返回 422 让你补」——报价阶段确实可能还没拿到头程；
+    接口该做的是把结论降级并说清缺什么，而不是拒绝服务或按 0 静默算完。
+    """
+    payload = {**VALID, "cost": THIN_COST}
+    body = _post(client, payload).json()
+
+    assert body["profit"]["missing_inputs"] == ["return_rate", "inbound_freight", "duty_rate"]
+    assert any("成本项未指定" in w for w in body["warnings"])
+    # 退货率这一路也必须是 None，而不是被填成 0
+    assert body["returns"]["source"] == "explicit"
+    assert body["returns"]["rate"] is None
+
+
+def test_optimistic_margin_cannot_be_reported_as_a_pass(client):
+    """同一件货：只填两个数 → NEED_MORE_INFO；补齐三个数 → NO_GO。
+
+    左边这个数（31.0%）比右边（10.3%）好看得多，而它之所以好看，
+    仅仅是因为三项成本被按 0 算了。以前这一步直接是 GO。
+    """
+    thin = {**VALID, "category": "desk_lamp", "cost": THIN_COST}
+    full = {
+        **VALID,
+        "category": "desk_lamp",
+        "cost": {
+            **THIN_COST,
+            "inbound_freight": 2.50,
+            "duty_rate": 0.237,
+            "return_rate": 0.08,
+            "returns_handling_fee": 3.00,
+            "returns_goods_loss_ratio": 0.30,
+            "returns_inbound_loss_ratio": 0.20,
+            "incoterm": "FOB",
+        },
+    }
+
+    thin_body = _post(client, thin).json()
+    full_body = _post(client, full).json()
+
+    assert thin_body["verdict"] == "NEED_MORE_INFO"
+    assert "成本项未指定" in thin_body["headline"]
+    assert full_body["verdict"] == "NO_GO"
+    assert thin_body["profit"]["gross_margin"] > full_body["profit"]["gross_margin"] + 0.20
+
+
+def test_explicit_zero_is_a_declaration_not_an_omission(client):
+    """显式写 0 = 「这一项确实是 0」，不算缺省，也就不降级。
+
+    两者在数值上一样，区别只在「谁说的」。分不清这两件事，
+    补数据的人就永远不知道自己是在补一个空，还是在改一个声明。
+    """
+    payload = {
+        **VALID,
+        "cost": {
+            **THIN_COST,
+            "inbound_freight": 0.0,
+            "duty_rate": 0.0,
+            "return_rate": 0.0,
+            "returns_handling_fee": 0.0,
+            "returns_goods_loss_ratio": 0.0,
+            "returns_inbound_loss_ratio": 0.0,
+            "incoterm": "FOB",
+        },
+    }
+    body = _post(client, payload).json()
+    assert body["profit"]["missing_inputs"] == []
+    assert not any("成本项未指定" in w for w in body["warnings"])
