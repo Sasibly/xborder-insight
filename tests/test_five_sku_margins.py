@@ -61,14 +61,14 @@ def _fee(conn, dims, weight_lb, *, lithium, price):
     return klass, env
 
 
-def _profit(cogs, price, fba, duty, *, freight=FREIGHT):
+def _profit(cogs, price, fba, duty, *, freight=FREIGHT, referral=REFERRAL):
     return p.compute(
         p.CostInputs(
             quoted_price=cogs,
             selling_price=price,
             inbound_freight=freight,
             duty_rate=duty,
-            referral_rate=REFERRAL,
+            referral_rate=referral,
             fba_fee=fba,
             return_rate=RETURNS,
             returns_handling_fee=3.0,
@@ -211,10 +211,10 @@ def test_cogs_ratio_is_what_kills_the_robot_vacuum(fees):
     [
         ("air_purifier", "a", 109.32),
         ("air_purifier", "b", 89.10),
-        ("coffee_machine", "a", 71.35),
+        ("coffee_machine", "a", 71.34),
         ("electric_kettle", "a", 40.79),
         ("robot_vacuum", "a", 270.69),
-        ("pet_fountain", "b", 52.41),
+        ("pet_fountain", "b", 52.40),
     ],
 )
 def test_price_needed_for_15pct(fees, key, label, target_price):
@@ -226,7 +226,7 @@ def test_price_needed_for_15pct(fees, key, label, target_price):
     spec = SKU[key]
     _, env = fees[(key, label)]
     got = _solve(0.15, spec["cogs"], env.low_usd, spec["duty"])
-    assert got == pytest.approx(target_price, abs=0.05)
+    assert got == pytest.approx(target_price, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -379,3 +379,197 @@ def test_price_and_cogs_levers_trade_at_half(fees):
         at_plus5 = _solve_cogs(0.15, spec["price"] + 5.0, env.low_usd, spec["duty"])
         per_dollar = (at_plus5 - at_now) / 5.0
         assert 0.48 < per_dollar < 0.55, f"{key}: 售价 $1 换 {per_dollar:.2f} 采购上限"
+
+
+# ---------------------------------------------------------------------------
+# §18 准入边界：把 15% 线化成一条不等式
+#
+# §17 逐台反解了采购上限，但那是「算出来」的。要拿它筛下一批候选，
+# 得先确认三件事：①成本项分解是穷尽的（否则不等式漏项）；
+# ②闭式解与数值解一致（否则文档里的表与代码算的不是一个东西）；
+# ③「超预算」与「毛利缺口」是同一个数（否则读者要在两套单位之间换算）。
+# ---------------------------------------------------------------------------
+
+# 售价里不属于你的那部分：佣金 15% + 退款冲减 8% + 退款管理费 0.24% + 目标毛利 15%
+ADMISSION_DENOMINATOR = 1 - 0.15 - 0.08 - 0.0024 - 0.15
+
+
+def _sides(result, price):
+    """把一张利润表拆成「进价侧 / 头程侧 / 平台侧」三段，用于检查分解是否穷尽。
+
+    合并而不是逐项列，是因为它们各自带不同的系数：进价侧是 `1.024 + 税率`
+    （关税按报价计、退货货损也是报价的 8%×30%），头程侧是 `1.016`
+    （退货里 20% 的头程沉没）。合并之后每一项与售价之比才是可加的。
+    """
+    return {
+        "cogs_side": (result.quoted_price + result.duty + result.returns.goods) / price,
+        "freight_side": (result.freight + result.returns.inbound) / price,
+        "referral": result.referral_fee / price,
+        "reversal": result.returns.revenue_reversal / price,
+        "admin": result.returns.refund_admin / price,
+        "handling": result.returns.handling / price,
+        "fba": result.fba_fee / price,
+        "margin": result.gross_margin,
+    }
+
+
+def test_profit_decomposition_is_exhaustive(fees):
+    """八段加起来必须正好是 100%——多一段就是重复计提，少一段就是漏计成本。
+
+    这条与 §18 的不等式是一体两面：不等式只说「采购 + FBA + 头程 ≤ 61.76%」，
+    而 61.76% 这个数只有在分解穷尽时才成立。若将来给模型加一项费用
+    （比如仓储费、弃置费）却忘了改分母，这里会先失败，而不是等报价单上少算一笔。
+    """
+    for key, spec in SKU.items():
+        label = "a" if spec["a"] else "b"
+        _, env = fees[(key, label)]
+        result = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"])
+        parts = _sides(result, spec["price"])
+        assert sum(parts.values()) == pytest.approx(1.0, abs=1e-9), (
+            f"{key}: 分解合计 {sum(parts.values()):.6f}，各项 {parts}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("air_purifier", "a"),
+        ("coffee_machine", "a"),
+        ("electric_kettle", "a"),
+        ("pet_fountain", "b"),
+    ],
+)
+def test_admission_inequality_matches_the_solver(fees, key, label):
+    """闭式解 `(采购×a + 头程×1.016 + $0.24 + FBA) ÷ 0.6176` 必须等于二分结果。
+
+    这条守的是文档 §18.1 那条式子。它是这一节唯一可被外部复算的东西——
+    读者拿计算器代进去，应当得到同一个售价。若模型将来新增一项费用而分母没改，
+    闭式解会偏低，而二分仍是对的，两者的差就是这个漏项。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    a = 1 + spec["duty"] + 0.08 * 0.30
+    closed = (
+        a * spec["cogs"] + 1.016 * FREIGHT + 0.08 * 3.0 + env.low_usd
+    ) / ADMISSION_DENOMINATOR
+    solved = _solve(0.15, spec["cogs"], env.low_usd, spec["duty"])
+    assert closed == pytest.approx(solved, abs=0.02)
+
+
+def test_refund_admin_cap_bends_the_closed_form(fees):
+    """售价 ≥ $166.67 时闭式解偏高——退款管理费封顶 $5，不再随售价线性增长。
+
+    扫地机是唯一撞线的（$199.99）：闭式解 $271.10，二分 $270.69，高 $0.41。
+    这不影响结论，但它是一条必须写进文档的边界：拿这条式子去算高客单 SKU，
+    得到的「所需售价」会偏高，方向是保守的（不会高估可行性），但不能说它精确。
+    """
+    spec = SKU["robot_vacuum"]
+    _, env = fees[("robot_vacuum", "a")]
+    a = 1 + spec["duty"] + 0.08 * 0.30
+    closed = (
+        a * spec["cogs"] + 1.016 * FREIGHT + 0.08 * 3.0 + env.low_usd
+    ) / ADMISSION_DENOMINATOR
+    solved = _solve(0.15, spec["cogs"], env.low_usd, spec["duty"])
+    assert closed - solved == pytest.approx(0.41, abs=0.03)
+    assert closed > solved  # 方向：封顶让闭式解偏高，不是偏低
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("air_purifier", "a"),
+        ("coffee_machine", "a"),
+        ("electric_kettle", "a"),
+        ("robot_vacuum", "a"),
+        ("pet_fountain", "b"),
+    ],
+)
+def test_overrun_in_margin_points_equals_the_gap(fees, key, label):
+    """「进价侧 + FBA 占售价」超出预算多少，毛利率就差多少点——同一个数。
+
+    这条让 §18 的诊断表不必再给两套单位：超预算 22.64% 就是缺口 22.64 点。
+    如果哪天两边的数对不上，说明分解里有项被算了两次或者漏了。
+
+    扫地机是唯一例外：它的退款管理费撞了 $5 上限，而预算式里按「售价的 0.24%」
+    近似，所以两边差 **0.04 点**（其余四台精确到 1e-6）。容差设 1e-3 是为了这一点，
+    不是为了容错——若差距再大，就该改预算式而不是放宽容差。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    price = spec["price"]
+    result = _profit(spec["cogs"], price, env.low_usd, spec["duty"])
+    parts = _sides(result, price)
+    budget = ADMISSION_DENOMINATOR - (1.016 * FREIGHT + 0.08 * 3.0) / price
+    overrun = (parts["cogs_side"] + parts["fba"]) - budget
+    assert overrun == pytest.approx(0.15 - result.gross_margin, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("price", "fba_ratio", "cogs_cap_ratio"),
+    [
+        (30.0, 0.05, 0.3102),
+        (30.0, 0.36, 0.0403),   # 水壶所在的那一格：采购只能占售价 4%
+        (50.0, 0.25, 0.2096),   # 下一批候选的经验线
+        (80.0, 0.25, 0.2510),
+        (200.0, 0.36, 0.1966),
+    ],
+)
+def test_cogs_cap_ratio_table(price, fba_ratio, cogs_cap_ratio):
+    """§18.3 那张表的一格：给定售价与 FBA 占售价的比例，采购最多能占售价多少。
+
+    这张表是给「还没量箱子的候选」用的——先按品类典型 FBA 估算，就能把
+    采购报价直接筛掉。表里的数由公式算出，不是行业数据；用错这一步
+    （比如拿品类均值代替单台）的代价见 `docs/04` §11.8。
+
+    表固定按普货 12.5%（a=1.149）生成。逐台的税率不同时（咖啡机 23.7%），
+    上限要再除以各自的 a——`docs/04` §18.3 第二张表给的就是那个数。
+    """
+    a = 1 + 0.125 + 0.08 * 0.30
+    budget = ADMISSION_DENOMINATOR - (1.016 * FREIGHT + 0.08 * 3.0) / price
+    cap = (budget - fba_ratio) / a
+    assert cap == pytest.approx(cogs_cap_ratio, abs=5e-4)
+
+
+@pytest.mark.parametrize(
+    ("key", "label", "margin_at_8pct"),
+    [
+        ("coffee_machine", "a", 0.1502),
+        ("pet_fountain", "b", 0.1350),
+        ("electric_kettle", "a", -0.0012),
+        ("air_purifier", "a", -0.0053),
+        ("robot_vacuum", "a", 0.0015),
+    ],
+)
+def test_referral_rate_swing_flips_only_the_coffee_machine(fees, key, label, margin_at_8pct):
+    """佣金从 15% 换到 8%，五台里只有咖啡机越过 15%——而它正是唯一值得谈的那台。
+
+    这条守的是 §18.6 的结论，也是下一步的排序依据：佣金差 7 个点，
+    咖啡机的缺口正好 7.10 点，换成 8% 后是 15.02%。
+    所以「查一次卖家后台的 fee category」（H1）与「向供应商还价 19.5%」（H21）
+    是两条等价路径，而前者的成本低一个量级。
+
+    15.02% 只比线高 0.02 个点，**不能算稳过**——它说明的是「这个参数的分量
+    与一次成功议价相当」，不是「查一下就能做」。要下 GO 还得同时确认 H1 与 H20。
+    """
+    spec = SKU[key]
+    _, env = fees[(key, label)]
+    got = _profit(spec["cogs"], spec["price"], env.low_usd, spec["duty"], referral=0.08)
+    assert got.gross_margin == pytest.approx(margin_at_8pct, abs=1e-4)
+
+
+def test_only_one_sku_crosses_when_referral_drops_to_8pct(fees):
+    """五台逐个过一遍：越过 15% 的必须恰好一台，否则 §18.6 的结论就错了。
+
+    写成一条独立断言而不是藏在参数化里，是因为「只有一台」本身是结论——
+    如果将来某次参数改动让两台同时越过，「唯一值得谈的那台」这个判断就失效了。
+    """
+    passed = []
+    for key, spec in SKU.items():
+        label = "a" if spec["a"] else "b"
+        _, env = fees[(key, label)]
+        margin = _profit(
+            spec["cogs"], spec["price"], env.low_usd, spec["duty"], referral=0.08
+        ).gross_margin
+        if margin >= 0.15:
+            passed.append(key)
+    assert passed == ["coffee_machine"]

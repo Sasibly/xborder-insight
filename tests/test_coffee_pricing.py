@@ -136,7 +136,7 @@ def test_15pct_floor_is_6722_after_repack(conn):
     _, before = _fee(conn, (16.0, 13.0, 9.5), 232.0)
     _, after = _fee(conn, (16.0, 13.0, 8.0), 232.0)
 
-    assert _solve_price(0.15, before.low_usd) == pytest.approx(71.35, abs=0.05)
+    assert _solve_price(0.15, before.low_usd) == pytest.approx(71.34, abs=0.01)
     assert _solve_price(0.15, after.low_usd) == pytest.approx(67.22, abs=0.05)
     assert _solve_price(0.20, after.low_usd) == pytest.approx(73.14, abs=0.05)
     # 若原产国非中国（3.7%），15% 线降到 $61.23 —— 那时 $63.99 是 17.67%，反而成立
