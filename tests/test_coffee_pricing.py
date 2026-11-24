@@ -35,10 +35,11 @@ def _fee(conn, dims, weight_oz, *, lithium=False, price=SELLING_PRICE):
     return klass, env
 
 
-def _profit(fba_fee, *, price=SELLING_PRICE, freight=6.00, duty=0.237, returns=0.08):
+def _profit(fba_fee, *, price=SELLING_PRICE, freight=6.00, duty=0.237, returns=0.08,
+            cogs=QUOTED_PRICE):
     return p.compute(
         p.CostInputs(
-            quoted_price=QUOTED_PRICE,
+            quoted_price=cogs,
             selling_price=price,
             inbound_freight=freight,
             duty_rate=duty,
@@ -237,3 +238,71 @@ def test_one_dollar_of_freight_costs_159_basis_points(conn):
         after.low_usd, freight=6.0
     ).gross_margin
     assert step == pytest.approx(-0.0159, abs=1e-4)
+
+
+def _ceiling(fba_fee, returns, target=0.15):
+    """给定 FBA 档与退货率，反解 15% 线对应的采购上限。"""
+    lo, hi = 0.0, 80.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if _profit(fba_fee, returns=returns, cogs=mid).gross_margin > target:
+            lo = mid
+        else:
+            hi = mid
+    return mid
+
+
+def _rate_for_his_quote(fba_fee, target=0.15):
+    """反解：退货率低到多少，他的 $18.50 才能在 15% 线上成立。
+
+    单调性成立（退货率越低毛利越高），所以二分可用。返回的既是「需要的退货率」，
+    也是这台机器的**生死线**——低于它 $18.50 才成立。
+    """
+    lo, hi = 0.0, 0.40
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if _profit(fba_fee, returns=mid).gross_margin > target:
+            lo = mid
+        else:
+            hi = mid
+    return mid
+
+
+def test_no_single_lever_gets_his_quote_over_the_line(conn):
+    """15% 裁决之后，四个变量逐个跑：没有一个能把 $18.50 推上 15% 线。
+
+    **这条是「不做」这个结论的全部依据**，所以每个数都对得上一条实跑：
+
+        退货率 10%（11-23 的旧口径，最好情况）  A 档上限 $15.732  → 差 $2.77
+        退货率 12%                              A 档上限 $14.556  → 差 $3.94
+        退货率 5.36%                            A 档上限 $18.50   → 刚好成立（不现实）
+        箱规 ≤8 英寸 + 15% 退货                 $12.813           → 差 $5.69
+        佣金 8% + 现箱 + 15% 退货               $14.423           → 差 $4.08
+
+    写这条的直接原因是文档初稿里出现过一个凭印象的数（「12% 时上限约 $13.85」），
+    实测是 $14.556——差一截，而且据此推出来的「低于 13% 就重开」这个门槛整个是错的
+    （真门槛 5.36%）。估的数只要没被测试钉住，就会长回文档里。
+    """
+    # 四档上限（15% 退货率为基准）
+    assert _ceiling(11.85, 0.15) == pytest.approx(12.813, abs=5e-4)
+    assert _ceiling(14.40, 0.15) == pytest.approx(10.824, abs=5e-4)
+    # 退货率回到旧口径也救不回来
+    assert _ceiling(11.85, 0.10) == pytest.approx(15.732, abs=5e-4)
+    assert _ceiling(11.85, 0.12) == pytest.approx(14.556, abs=5e-4)
+    # 佣金 8%（-7 个点）+ 15% 退货：毛利只有 6.83%（12.67% 是 10% 退货率下的数），
+    # 上限 $14.423，仍差 $4.08
+    eight = p.compute(
+        p.CostInputs(
+            quoted_price=QUOTED_PRICE, selling_price=SELLING_PRICE,
+            inbound_freight=6.00, duty_rate=0.237, referral_rate=0.08,
+            fba_fee=14.40, return_rate=0.15,
+            returns_handling_fee=3.00, returns_refund_admin_rate=0.20,
+            returns_goods_loss_ratio=0.30, returns_inbound_loss_ratio=0.20,
+            incoterm="FOB",
+        )
+    )
+    assert eight.gross_margin == pytest.approx(0.0683, abs=5e-4)
+
+    # 生死线：A 档要 5.36%、B 档要 1.99% —— 都不是一台真实机器会有的退货率
+    assert _rate_for_his_quote(11.85) == pytest.approx(0.0536, abs=2e-4)
+    assert _rate_for_his_quote(14.40) == pytest.approx(0.0199, abs=2e-4)

@@ -270,3 +270,30 @@ def test_the_baseline_alone_decides_this_machine_not_the_stress_case(conn):
     assert stressed.stress_margin == pytest.approx(0.0337, abs=5e-4)
     assert stressed.margin_drop_pts == pytest.approx(5.85, abs=0.05)
     assert stressed.worth_negotiating, "两档都为正——但基线只有 9.22%，压测不是问题所在"
+
+
+def test_the_settled_rate_is_recorded_as_a_verdict_not_a_reading(conn):
+    """13:44 用户拍板 15%（m0017）：口径定了，但「裁决」不等于「核实」。
+
+    这条钉三件事，少一件都会让后来的判断走偏：
+
+    ① 数值没被顺手改掉（15/20）。`m0017` 只改 `note`——改数的迁移是 `m0016`，
+       两条分开是为了「哪一次动了结论」能从迁移历史里直接读出来；
+    ② `status` 仍是 draft、`evidence_kind` 仍是 estimate。拍板不是读数，
+       CHECK 挡着不许升 verified；要升还是拿 FBA Returns 报表（`H3`）。
+       这一条最容易被好心抹掉：领导说「确定 15%」听起来比「假设 15%」硬，
+       但它硬的是**口径**，不是**证据**；
+    ③ `note` 里不能再留「与 10%/14% 冲突、不判谁对」。那是 11:40 当时的正确措辞，
+       13:44 之后就是过期信息——读的人会以为还有悬案，而结论其实已经封口。
+    """
+    record = pr.require(conn, COFFEE)
+    assert record.baseline_rate == pytest.approx(0.15)
+    assert record.stress_rate == pytest.approx(0.20)
+    assert record.status == "draft"
+    assert record.evidence_kind == "estimate"
+    assert not record.usable, "裁决不是读数：不能对外称「读到的退货率」"
+
+    note = record.note or ""
+    assert "裁决" in note and "13:44" in note
+    assert "不判谁对" not in note, "并存措辞必须撤掉，否则下一个人会以为还要等确认"
+    assert "draft" in note, "note 要自己写明它仍是 draft，别只依赖字段"
