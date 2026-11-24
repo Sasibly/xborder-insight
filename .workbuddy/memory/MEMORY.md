@@ -54,6 +54,23 @@
 - 箱规诉求只说外部事实（18×14×8 是平台上限、超档多少钱），内部安全垫不外传；
   提外部诉求前先查 `measured_skus.json` 的 `superseded` 段。
 
+## 回复 → 动作（2026-11-24 10:20）
+
+- `scripts/db.py reply`：吃四个事实（箱规能/不能/没答、受限原因、他的报价、`--firm`），
+  出一种动作 + 全部数字 + 可直接发的话术。**退出码即结论**：0 有动作 / 1 先放 /
+  3 还在等对方 / 2 输入不成立。判定全在 `domain/reply.py`，七动作：
+  `reask_box` / `reask_blocker` / `open` / `accept` / `counter` / `reprice` / `drop`。
+- **优先级**：箱规未答先问不报价 → 「改不了」没说原因先问原因（这一问值 $2.00/件，
+  B 上限 13.719 → A 上限 15.732，而 B 档压价空间是 $0）→ 才判价。让步按**本轮报价**算。
+- **`firm`**（咬死不放）是 `reprice` 的唯一现实入口：$15.80 让步 0.4% 但不再让 →
+  券后价 $64.99。没有它，提价几乎不可能触发（超带时涨价需求普遍 >8%，上限 5%）。
+- **话术里不许带价**：上一版「做得到的话 $15.00」会被回成「箱规改不了、$15.00 行」，
+  那是 B 档 **12.46%**。一次只谈一个变量。
+- `NEGOTIABLE_DROP_PCT=15%` / `PRICE_HIKE_MAX_PCT=5%` 是**助手给定值**（3 个案例，
+  非分布）；有 3 次以上真实让步记录后替换。
+- 入口测试必须 `--db <隔离库>`（`app_db_file`）：`--sku` 读的 `data/app.sqlite3`
+  在 .gitignore，直连会让干净克隆四条全红。
+
 ## 结构现状（易忘）
 
 - 迁移已到 **v15**（v14 `product_returns`；v15 改咖啡机两档退货率）。`db.py roundtrip`
@@ -85,7 +102,7 @@
   `PYTEST_ADDOPTS="--basetemp=/tmp/pytest-xbi"`，不改仓库。看总数用 `-o addopts="--strict-markers" -q`。
 - **改 `schemas.py` 字段必须写 `description=`**（`tests/test_openapi_contract.py` 9 条守门）；
   `/docs` 与 `/openapi.json` 不许鉴权；加错误码同步 `responses`。
-- 现状：门禁 **784 条（783 passed + 1 xfailed）**、迁移 v15、F1 **0.6070**、
+- 现状：门禁 **811 条（810 passed + 1 xfailed）**、迁移 v15、F1 **0.6070**、
   容器冒烟 **19/19（schema v15）** / local 17/17。Docker Hub 不可用时
   `--base-image public.ecr.aws/docker/library/python:3.13-slim`；`make` 在 Git Bash 里可能没有，
   直接调 `scripts/check.py` / `scripts/smoke.py --target docker`。
