@@ -1506,8 +1506,9 @@ def main(argv: list[str] | None = None) -> int:
                             help="箱规答复：yes=最短边能做到 8 英寸内；no=改不了；"
                                  "unknown=还没回（默认，会先问不报价）")
     rep_parser.add_argument("--box-blocker", default=None,
-                            choices=("paperboard", "tooling"),
-                            help="只在 --box no 时给：纸板受限 / 模具受限。"
+                            choices=("paperboard", "tooling", "cushion"),
+                            help="只在 --box no 时给：paperboard=纸板规格 / tooling=模具或内衬 / "
+                                 "cushion=缓冲结构（ISTA 跌落底线与机身净边之间没余量）。"
                                  "不给则动作为「先问清受限在哪」")
     rep_parser.add_argument("--counter", type=float, default=None,
                             help="他的反报价（$/件）。给了就判签/还价/换杠杆")

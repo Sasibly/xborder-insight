@@ -102,13 +102,43 @@ def test_box_refused_without_reason_asks_the_blocker_first():
     assert res.next_message == R.BLOCKER_QUESTION
 
 
-def test_both_blockers_are_valid_and_labelled():
-    """纸板与模具都能往下走，但标签必须分开显示——方向相反，处置也不同。"""
+def test_all_blockers_are_valid_and_labelled():
+    """纸板、模具、缓冲三类都能往下走，但标签必须分开显示——处置方向不同。
+
+    缓冲这一类是 2026-11-24 11:11 真出现后才加的（`docs/04` §34.8 早就写着
+    「出现第三类要加枚举值，不要塞进 tooling」）。
+    """
+    assert set(R.BLOCKER_LABELS) == {
+        R.BLOCKER_PAPERBOARD, R.BLOCKER_TOOLING, R.BLOCKER_CUSHION
+    }
     for kind, label in R.BLOCKER_LABELS.items():
         reply = R.SupplierReply(box_fits=False, box_blocker=kind)
         assert reply.blocker_label == label
         res = R.resolve(_coffee(FBA_B), reply, fair_cogs=FAIR)
         assert res.action == R.ACTION_DROP
+
+
+def test_cushion_blocker_gets_its_own_three_notes():
+    """「卡在缓冲」不能按模具处理：换纸板没用，可试的是换材料，而材料要先有机身净尺寸。
+
+    三句话各自改变下一步动作，少一句就会照着别人的说法走——
+    最典型的是把「单侧 2 英寸」当成 ISTA 的标准（它只规定跌落高度与次数）。
+    """
+    res = R.resolve(
+        _coffee(FBA_B),
+        R.SupplierReply(box_fits=False, box_blocker=R.BLOCKER_CUSHION),
+        fair_cogs=FAIR,
+    )
+    assert res.action == R.ACTION_DROP
+    assert res.branch == "B"
+    text = "".join(res.reasons)
+    for note in R.BLOCKER_CUSHION_NOTES:
+        assert note in res.reasons, text
+    assert "不规定缓冲厚度" in text
+    assert "机身净尺寸" in text
+    # 不能落到「问原因」那条路上：他已经说清原因了，再问一遍等于没听
+    assert res.action != R.ACTION_REASK_BLOCKER
+    assert res.next_message is None
 
 
 def test_blocker_without_refusal_is_rejected():

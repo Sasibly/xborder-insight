@@ -98,6 +98,29 @@ def test_filling_the_box_to_the_ceiling_costs_eight_cents_more(conn):
     assert e18.billable_weight_oz > 232.0 > 231.9
 
 
+def test_branch_b_cannot_be_rescued_by_price_within_tolerance(conn):
+    """B 档（$14.40）+ 现报价 $18.50：+5% 提价容忍内最高只有 8.83%，到 15% 要 $74.14。
+
+    「券后价 $65.99 = 15.31%」这句曾被写进 `docs/04` §33.3，实测 **7.63%**——错在把
+    「券后价」当成目录价又打了一次折，等于多算一次毛利。四个价位一起钉住：
+    改退货率、改 FBA 档位、或再有人手算一遍，都会立刻红。
+    """
+    _, b = _fee(conn, (16.0, 13.0, 9.5), 232.0)
+    assert b.low_usd == pytest.approx(14.40, abs=0.005)
+
+    def margin(price: float) -> float:
+        return _profit(b.low_usd, price=price, returns=0.10).gross_margin
+
+    assert margin(63.99) == pytest.approx(0.05534, abs=5e-5)  # 他现在的报价
+    assert margin(65.99) == pytest.approx(0.07630, abs=5e-5)  # 旧记录误称 15.31%
+    assert margin(67.19) == pytest.approx(0.08828, abs=5e-5)  # 提价上限 +5%
+    assert margin(74.99) == pytest.approx(0.15679, abs=5e-5)  # 到 15% 的实际价位
+
+    # B 档不是「提个价就能做」：容忍带内没有任何价位到 15%
+    assert margin(SELLING_PRICE * 1.05) < 0.15
+    assert margin(74.99) >= 0.15  # 而能到的那个价超容忍（+17.2%）
+
+
 def test_price_band_is_over_50_for_the_actual_price(conn):
     _, env = _fee(conn, (16.0, 13.0, 9.5), 232.0)
     assert env.price_band == "over_50"

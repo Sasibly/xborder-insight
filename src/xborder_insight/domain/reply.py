@@ -79,13 +79,31 @@ SIGN_ROUND = 0.10
 #: 报精确解等于告诉对方「我算过、一分不让」（`docs/04` §27.2）。
 OPEN_ROUND = 0.50
 
-#: 箱规受限的两类原因。方向相反：纸板常有替代，模具基本没有。
+#: 箱规受限的三类原因。前两类方向相反：纸板常有替代，模具基本没有。
+#: 第三类是 2026-11-24 11:11 真出现后才加的（`docs/04` §34.8 早就写着「出现第三类要加
+#: 枚举值，不要塞进 tooling」）：**缓冲/结构空间**——ISTA 跌落底线与机身最短边之间
+#: 没有可挪空间。它既不是纸板也不是模具，换纸板档没有用，唯一可试的是换缓冲材料
+#: （模压纸浆 / 高密度 EPS）或加内撑，而那要他先给出机身净尺寸。
 BLOCKER_PAPERBOARD = "paperboard"
 BLOCKER_TOOLING = "tooling"
+BLOCKER_CUSHION = "cushion"
 BLOCKER_LABELS = {
     BLOCKER_PAPERBOARD: "纸板规格",
     BLOCKER_TOOLING: "模具/内衬",
+    BLOCKER_CUSHION: "缓冲/结构空间",
 }
+
+#: 对方说「卡在缓冲」时补在结论里的三句。不是安慰话，每一句都改变下一步动作：
+#: ① 别换纸板（方向错了）；② 别把「单侧 N 英寸」当标准；③ 要追只追一轮，先要机身净尺寸。
+BLOCKER_CUSHION_NOTES = (
+    "他说卡在缓冲：ISTA 跌落底线与机身最短边之间没有可挪空间——这既不是纸板也不是模具，"
+    "换纸板档、改内衬都没用，别顺着这条路要方案",
+    "别把「单侧 2 英寸」当标准：ISTA 3A 只规定跌落高度与次数，**不规定缓冲厚度**；"
+    "厚度由机身脆值与缓冲材料的 cushion curve 决定，换材料（模压纸浆 / 高密度 EPS）"
+    "或加内撑仍有一档可试",
+    "要追只追一轮，且先向他索取机身净尺寸三边——机身是他自己的产品，"
+    "我们手上只有他给过的外箱 16×13×9.5 与毛重 14.5 lb",
+)
 
 #: 问箱规的话术（`docs/04` §35.2 定稿，2026-11-24 10:26）。
 #:
@@ -453,9 +471,14 @@ def resolve(
                 candidate, current, sign_ceiling,
                 source="他现在的报价", firm=False, question=question,
             )
+            cushion = (
+                BLOCKER_CUSHION_NOTES
+                if reply.box_blocker == BLOCKER_CUSHION
+                else ()
+            )
             return Resolution(
                 action=action,
-                reasons=reasons + (
+                reasons=reasons + cushion + (
                     f"所以不开口：报 ${open_price:,.2f} 等于要他一次降 {need_now:.1%}，"
                     "这个幅度不会有人接（`docs/04` §33.3 B 档的情形）",
                 ),
