@@ -36,9 +36,9 @@ def test_seed_rows_carry_the_documented_rates(conn):
     assert purifier.rate_gap_pts == pytest.approx(4.4, abs=0.05)
 
     coffee = pr.require(conn, COFFEE)
-    assert coffee.baseline_rate == pytest.approx(0.10)
-    assert coffee.stress_rate == pytest.approx(0.14)
-    assert coffee.rate_gap_pts == pytest.approx(4.0, abs=0.05)
+    assert coffee.baseline_rate == pytest.approx(0.15)
+    assert coffee.stress_rate == pytest.approx(0.20)
+    assert coffee.rate_gap_pts == pytest.approx(5.0, abs=0.05)
 
 
 def test_both_seed_rows_are_draft_for_different_reasons(conn):
@@ -248,15 +248,16 @@ def test_database_rates_reproduce_the_signed_margin(conn):
     assert result.worth_negotiating, "两档都为正才值得谈——这是 §25.1 的规则"
 
 
-def test_coffee_gap_narrows_with_the_baseline_but_the_verdict_is_set_by_the_baseline(conn):
-    """咖啡机两档 10% → 14%（差 4 个点）。表只负责给数，判定交给 `stress_test`。
+def test_the_baseline_alone_decides_this_machine_not_the_stress_case(conn):
+    """咖啡机两档 15% → 20%（差 5 个点）。表只负责给数，判定交给 `stress_test`。
 
-    20:45 把基线从 8% 改成 10%、压力档从 15% 改成 14% 之后，两档差从 7 收窄到 4——
-    14% 不是独立读数，是随基线平移的情景值。所以这一台的风险不在压测翻转，
-    而在基线本身：$14.50 在 10% 下只有 13.45%，**还没走到压力档就已经出局**。
+    **这一条被改过三次口径**（8%/15% → 10%/14% → 15%/20%），每次结论都翻一次：
+    A 档签字线 $15.732 → $12.813，同一个「开口 $15.00」从 16.45% 掉到 10.62%。
+    所以在 15% 口径下，A 档那个价不再成立——**先死的不是压测，是基线**。
+    这也是把退货率放进迁移而不是 `returns-set` 的原因：它每动一次，对外结论就变一次。
     """
     record = pr.require(conn, COFFEE)
-    assert record.stress_rate - record.baseline_rate == pytest.approx(0.04, abs=1e-6)
+    assert record.stress_rate - record.baseline_rate == pytest.approx(0.05, abs=1e-6)
 
     candidate = admission.Candidate(
         name="coffee", selling_price=63.99, quoted_cost=15.70, duty_rate=0.237,
@@ -264,7 +265,8 @@ def test_coffee_gap_narrows_with_the_baseline_but_the_verdict_is_set_by_the_base
         return_rate=record.baseline_rate,
     )
     stressed = admission.stress_test(candidate, record.stress_rate)
-    assert stressed.baseline_margin == pytest.approx(0.1506, abs=5e-4)
-    assert stressed.stress_margin == pytest.approx(0.1039, abs=5e-4)
-    assert stressed.margin_drop_pts == pytest.approx(4.68, abs=0.05)
-    assert stressed.worth_negotiating, "两档都为正——风险可承受，问题在基线只剩 0.06 个点"
+    # 同一个 $15.70，在 10% 下是 15.06%（刚过线），在 15% 下只剩 9.22%
+    assert stressed.baseline_margin == pytest.approx(0.0922, abs=5e-4)
+    assert stressed.stress_margin == pytest.approx(0.0337, abs=5e-4)
+    assert stressed.margin_drop_pts == pytest.approx(5.85, abs=0.05)
+    assert stressed.worth_negotiating, "两档都为正——但基线只有 9.22%，压测不是问题所在"

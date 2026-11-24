@@ -402,8 +402,13 @@ def _reply(db: Path, *argv: str) -> subprocess.CompletedProcess[str]:
         (("--sku", "coffee_semi_1613", "--cogs", "18.50"), 3, "先问箱规"),
         (("--sku", "coffee_semi_1613", "--cogs", "18.50", "--box", "no"),
          3, "问清受限在哪"),
+        # 库里现在是 15%（m0016），A 档也封死；用 10% 显式覆盖才走得到「发开口价」，
+        # 这条留着的目的是钉住 CLI 的动作映射，不是钉住某个退货率。
         (("--sku", "coffee_semi_1613", "--cogs", "18.50", "--box", "yes",
-          "--fba", "11.85"), 0, "发开口价"),
+          "--fba", "11.85", "--returns", "0.10"), 0, "发开口价"),
+        # 同一句话不覆盖退货率（= 库里 15%）→ 箱规改成了也只剩 $12.80 签字线
+        (("--sku", "coffee_semi_1613", "--cogs", "18.50", "--box", "yes",
+          "--fba", "11.85"), 1, "先放"),
         (("--sku", "coffee_semi_1613", "--cogs", "18.50", "--box", "no",
           "--box-blocker", "tooling", "--fba", "14.40"), 1, "先放"),
     ],
@@ -461,13 +466,17 @@ def test_cli_refuses_without_fba_once_the_box_is_settled(app_db_file):
 
 
 def test_cli_prints_the_fifteen_percent_line_to_three_decimals(app_db_file):
-    """$13.719 必须印三位小数：印成 $13.72 就等于把「四舍五入即掉线」的数报出去。"""
+    """$10.824 必须印三位小数：印成 $10.82 就等于把「四舍五入即掉线」的数报出去。
+
+    同一个坑在 10% 口径下是 $13.719，在 15% 口径下是 $10.824——精确解永远比
+    签字线高一点点，四舍五入到分就跌破 15%，所以签字线只能取 $10.80。
+    """
     proc = _reply(
         app_db_file, "--sku", "coffee_semi_1613", "--cogs", "18.50",
         "--box", "no", "--box-blocker", "tooling", "--fba", "14.40",
     )
-    assert "$13.719" in proc.stdout
-    assert "签字线 $13.70" in proc.stdout
+    assert "$10.824" in proc.stdout
+    assert "签字线 $10.80" in proc.stdout
 
 
 def test_cli_prints_the_referral_rate_and_lets_it_be_overridden(app_db_file):
@@ -483,13 +492,14 @@ def test_cli_prints_the_referral_rate_and_lets_it_be_overridden(app_db_file):
     )
     assert default.returncode == 1
     assert "佣金：15%（默认值，H1 11-23 已读到 15%）" in default.stdout
-    assert "签字线 $13.70" in default.stdout
+    assert "签字线 $10.80" in default.stdout
 
     eight = _reply(
         app_db_file, "--sku", "coffee_semi_1613", "--cogs", "18.50",
         "--box", "no", "--box-blocker", "cushion", "--fba", "14.40",
         "--referral", "0.08",
     )
-    assert eight.returncode == 0
     assert "佣金：8%（--referral 指定）" in eight.stdout
-    assert "$17.325" in eight.stdout and "签字线 $17.30" in eight.stdout
+    # 15% 退货率下，8% 佣金也救不回来：上限 $14.423，他的 $18.50 要降 22%
+    assert "$14.423" in eight.stdout and "签字线 $14.40" in eight.stdout
+    assert eight.returncode == 1

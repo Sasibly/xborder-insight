@@ -31,6 +31,7 @@ from . import (
     m0013_param_values,
     m0014_product_returns,
     m0015_coffee_returns,
+    m0016_coffee_returns_15,
 )
 
 
@@ -67,6 +68,8 @@ MIGRATIONS: tuple[Migration, ...] = (
               m0014_product_returns.down),
     Migration(15, "coffee_returns", m0015_coffee_returns.up,
               m0015_coffee_returns.down),
+    Migration(16, "coffee_returns_15", m0016_coffee_returns_15.up,
+              m0016_coffee_returns_15.down),
 )
 
 BY_VERSION: dict[int, Migration] = {m.version: m for m in MIGRATIONS}
