@@ -2,7 +2,47 @@
 
 > 用途：出问题时按「症状 → 一条命令 → 原因 → 处置」走，不靠回忆。
 > 对应验收项：`docs/02` P4-4。所有命令都实跑过；写进来但没跑过的命令要标明。
-> 最后核对：2026-11-23 20:53（schema v15，门禁 784 条；容器冒烟 19/19 于 v15 实测）。
+> 最后核对：2026-11-23 20:53（schema v15，门禁 811 条；容器冒烟 19/19 于 v15 实测）。
+
+## 开始之前：怎么跑一条命令（Windows，第一次用终端就看这节）
+
+**「项目」在哪**：`D:\WorkBuddy_Spaces\spaces\2026_11_17_10-57-57`。里面有 `src`（代码）、
+`tests`（811 条测试）、`docs`（这套文档）、`data/app.sqlite3`（本地库，已迁到 v15）、`.venv`（依赖）。
+**不需要新建任何东西，也不需要先准备数据**——库由迁移从零建起，测试自带隔离库。
+
+跑命令有两条路，任选：
+
+**路 A（最省事）**：直接跟 WorkBuddy 说「跑一下 `scripts/check.py`，把最后 10 行贴给我」。
+代理在本机执行，结果直接回给你。适合「我只想知道对不对、不想学命令」。
+
+**路 B（自己动手）**：
+
+1. 按 `Win` 键，输入 `Git Bash`，回车（装过 Git 就有；没有就用系统自带的 PowerShell）
+2. 进项目目录，**盘符要写成 `/d/`**，反斜杠在 Bash 里会被当转义符吃掉：
+
+   ```bash
+   cd /d/WorkBuddy_Spaces/spaces/2026_11_17_10-57-57
+   ```
+
+3. 确认进对了（该列出 `src tests docs data`，缺一个就说明还在别的目录）：
+
+   ```bash
+   ls
+   ```
+
+4. 粘贴命令。**不用先激活虚拟环境**——本手册所有命令都写成 `.venv/Scripts/python.exe`，
+   直接指向项目自己的解释器；敲 `python` 有可能跑到系统里那个（缺依赖 → `ModuleNotFoundError`）。
+
+   ```bash
+   .venv/Scripts/python.exe scripts/db.py status
+   ```
+
+**在 Windows 自带的 PowerShell 里**，把路径分隔符换成反斜杠即可：
+`.venv\Scripts\python.exe scripts\db.py status`。
+
+> 判断「这条命令是不是跑在项目里」的最快办法：报错里出现 `data/app.sqlite3` 或
+> `src/xborder_insight` 说明进了；出现 `No such file or directory: 'scripts/db.py'`
+> 说明没进到项目根目录——回到第 2 步。
 
 ## 0. 三个运维端点，别混用
 

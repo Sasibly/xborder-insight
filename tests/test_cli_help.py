@@ -34,6 +34,7 @@ SUBCOMMANDS = (
     "fba-envelope",
     "transport",
     "screen",
+    "reply",
     "fba-profile",
     "reset",
     "fba-export",

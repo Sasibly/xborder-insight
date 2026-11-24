@@ -28,6 +28,11 @@
                                              # 两档退货率从 product_returns 取，自动压测
     python scripts/db.py screen --csv data/candidates/example.csv
                                              # 批量：一张候选表进，三组结论出
+    python scripts/db.py reply --sku coffee_semi_1613 --price 63.99 --cogs 18.50 \\
+        --duty 0.237 --freight 6.00 --fair 20.00 --box yes --fba 11.85
+                                             # 供应商回复 → 下一步动作（开口 / 还价 / 签 /
+                                             # 改提售价 / 先放）。退出码即结论：0 有动作、
+                                             # 1 先放、3 还在等他、2 输入不成立
 
 破坏性操作一律要求 --yes，且默认作用在配置的 DB_PATH 上；
 要动真库请显式传 --db。默认值永远是最安全的那条路径。
@@ -40,6 +45,7 @@ import csv
 import sqlite3
 import sys
 import tempfile
+import textwrap
 import unicodedata
 from dataclasses import replace
 from datetime import date
@@ -60,6 +66,7 @@ from xborder_insight.db.connection import (  # noqa: E402
 )
 from xborder_insight.db.params import coverage, list_params  # noqa: E402
 from xborder_insight.domain import admission  # noqa: E402
+from xborder_insight.domain import reply as reply_mod  # noqa: E402
 from xborder_insight.domain import profiles  # noqa: E402
 from xborder_insight.domain import transport  # noqa: E402
 from xborder_insight.domain import package as pkg  # noqa: E402
@@ -774,6 +781,153 @@ def _resolve_returns(args, conn):
     return baseline, stress, "；".join(parts), record
 
 
+def _dump_reply(args, conn=None) -> int:
+    """供应商回复 → 下一步动作。
+
+    判定全在 `domain/reply.py`，这里只负责取数、打印、给退出码：
+      0 = 有动作可做（开口 / 还价 / 签 / 改提售价）
+      1 = 这台先放
+      3 = 还在等对方（箱规没答，或说改不了但没说原因）
+
+    退货率必须能定：缺它毛利是上界，而上界反解出的签字线偏高（H24），
+    拿它去报价必亏。所以这里宁可退回 2，也不给默认值。
+    """
+    record = None
+    if args.sku:
+        if conn is None:
+            raise RuntimeError("--sku 需要数据库连接")
+        record = returns_db.require(conn, args.sku)
+
+    baseline = (
+        args.returns
+        if args.returns is not None
+        else (record.baseline_rate if record is not None else None)
+    )
+    stress = (
+        args.stress_returns
+        if args.stress_returns is not None
+        else (record.stress_rate if record is not None else None)
+    )
+    if baseline is None:
+        print(
+            "[输入不成立] 需要退货率：--sku 从 product_returns 取，或显式给 --returns。"
+            "缺它签字线会偏高（上界），不能拿去报价"
+        )
+        return 2
+
+    box = {"yes": True, "no": False, "unknown": None}[args.box]
+    try:
+        rp = reply_mod.SupplierReply(
+            box_fits=box,
+            box_blocker=args.box_blocker,
+            counter_price=args.counter,
+            firm=args.firm,
+        )
+    except admission.AdmissionInputInvalid as exc:
+        print(f"[输入不成立] {exc}")
+        return 2
+
+    candidate = admission.Candidate(
+        name=args.name,
+        selling_price=args.price,
+        quoted_cost=args.cogs,
+        duty_rate=args.duty,
+        fba_fee=args.fba,
+        inbound_freight=args.freight,
+        return_rate=baseline,
+        incoterm=args.incoterm,
+    )
+
+    # 不在入口预检「够不够算」：那是 `resolve` 的职责，入口再判一遍就会出现
+    # 「只问箱规原因也要 FBA」这种自相矛盾的拒绝（`box no` 且未给原因时压根不判价）。
+    # 缺什么、上界不给价格线，都由 `resolve` 抛 `AdmissionInputInvalid` 带回来。
+
+    try:
+        res = reply_mod.resolve(
+            candidate, rp, fair_cogs=args.fair, stress_returns=stress
+        )
+    except admission.AdmissionInputInvalid as exc:
+        print(f"[输入不成立] {exc}")
+        return 2
+
+    def money(value, dash="—"):
+        return dash if value is None else f"${value:,.2f}"
+
+    box_text = {True: "能做到 ≤8 英寸", False: "改不了", None: "没答"}[rp.box_fits]
+    print("供应商回复 → 下一步动作")
+    print("-" * 62)
+    head = f"  回复：箱规 {box_text}"
+    if rp.blocker_label:
+        head += f"（{rp.blocker_label}受限）"
+    if rp.counter_price is not None:
+        head += f"　他的报价 {money(rp.counter_price)}"
+    print(head)
+    duty = "—" if args.duty is None else f"{args.duty:.1%}"
+    print(
+        f"  输入：售价 {money(args.price)}　现报价 {money(args.cogs)}　关税 {duty}"
+        f"　FBA {money(args.fba)}　头程 {money(args.freight)}"
+    )
+    if res.branch:
+        print(f"  分支：{res.branch} 档（FBA {money(res.fba_fee)}）")
+    origin = "--returns 指定" if args.returns is not None else ("库" if args.sku else "未给")
+    tail = f"　压测 {stress:.2%}" if stress is not None else "　未压测"
+    print(f"  退货率：基线 {baseline:.2%}（{origin}）{tail}")
+    print()
+    print(f"  动作：{res.label}")
+
+    if res.sign_price is not None:
+        bits = []
+        if res.sign_ceiling is not None:
+            # 三位小数：$13.719 印成 $13.72 就等于把那个「四舍五入即掉线」的数报出去
+            bits.append(f"15% 线 ${res.sign_ceiling:,.3f}")
+        margin = "" if res.sign_margin is None else f"（毛利 {res.sign_margin:.2%}）"
+        bits.append(f"签字线 {money(res.sign_price)}{margin}")
+        # 只有真要开口的动作才印开口价：`先放` / `改提售价` 时印它，
+        # 读者会把「我们本来准备报这个」当成「该报这个」。
+        if res.open_price is not None and res.action in (
+            reply_mod.ACTION_OPEN,
+            reply_mod.ACTION_COUNTER,
+            reply_mod.ACTION_ACCEPT,
+        ):
+            bits.append(f"开口 {money(res.open_price)}")
+        print("  数字：" + "　".join(bits))
+    if res.reply_margin is not None:
+        line = f"  他报价下毛利 {res.reply_margin:.2%}"
+        if res.need_drop_pct is not None and res.need_drop_pct > 0:
+            line += f"　到签字线需让步 {res.need_drop_pct:.1%}"
+        print(line)
+    if res.stress is not None:
+        print(
+            f"  压测：基线 {res.stress.baseline_margin:.2%} → 压力 "
+            f"{res.stress.stress_margin:.2%}（掉 {res.stress.margin_drop_pts:.2f} 点）"
+            f"｜{res.stress.label}"
+        )
+
+    print()
+    for item in res.reasons:
+        print(f"  · {item}")
+
+    if res.next_message:
+        print()
+        print("  话术（可直接复制）：")
+        for line in textwrap.wrap(res.next_message, width=52):
+            print(f"    {line}")
+    if res.pending_question and res.next_message != res.pending_question:
+        print()
+        print("  还欠对方一句：")
+        for line in textwrap.wrap(res.pending_question, width=52):
+            print(f"    {line}")
+
+    if res.action in (
+        reply_mod.ACTION_REASK_BOX,
+        reply_mod.ACTION_REASK_BLOCKER,
+    ):
+        return 3
+    if res.action == reply_mod.ACTION_DROP:
+        return 1
+    return 0
+
+
 def _dump_screen(args, conn=None) -> int:
     """候选准入。不给 `--sku` 时完全不碰数据库：缺口与目标价都是纯计算。
 
@@ -1301,6 +1455,42 @@ def main(argv: list[str] | None = None) -> int:
     scr_parser.add_argument("--incoterm", default="FOB",
                             choices=("FOB", "DDP"), help="默认 FOB")
 
+    rep_parser = sub.add_parser(
+        "reply",
+        help="供应商回复 → 下一步动作（问箱规 / 发开口 / 还价 / 签 / 改提售价 / 先放）",
+    )
+    rep_parser.add_argument("--name", default="candidate", help="候选名（输出用）")
+    rep_parser.add_argument("--price", type=float, required=True, help="我方售价（美元）")
+    rep_parser.add_argument("--cogs", type=float, required=True,
+                            help="他当前的报价（$/件），这一轮的起点")
+    rep_parser.add_argument("--duty", type=float, required=True, help="关税率（0–1）")
+    rep_parser.add_argument("--box", default="unknown",
+                            choices=("yes", "no", "unknown"),
+                            help="箱规答复：yes=最短边能做到 8 英寸内；no=改不了；"
+                                 "unknown=还没回（默认，会先问不报价）")
+    rep_parser.add_argument("--box-blocker", default=None,
+                            choices=("paperboard", "tooling"),
+                            help="只在 --box no 时给：纸板受限 / 模具受限。"
+                                 "不给则动作为「先问清受限在哪」")
+    rep_parser.add_argument("--counter", type=float, default=None,
+                            help="他的反报价（$/件）。给了就判签/还价/换杠杆")
+    rep_parser.add_argument("--firm", action="store_true",
+                            help="他说「就这个价，不再让」。降幅不大但咬死不放时，"
+                                 "结论会从「还价」变成「改提售价」")
+    rep_parser.add_argument("--fba", type=float, default=None,
+                            help="箱规对应档位的 FBA（$/件）。--box unknown 时不需要")
+    rep_parser.add_argument("--freight", type=float, default=None,
+                            help="头程（$/件）。DDP 报价可不给；FOB 不给会拒绝判价")
+    rep_parser.add_argument("--fair", type=float, default=None,
+                            help="FOB 公允价（内部锚，只用于压开口价，绝不进话术）")
+    rep_parser.add_argument("--sku", default=None,
+                            help="从 product_returns 取两档退货率（如 coffee_semi_1613）")
+    rep_parser.add_argument("--returns", type=float, default=None,
+                            help="基线退货率，覆盖库值")
+    rep_parser.add_argument("--stress-returns", type=float, default=None,
+                            help="压测档退货率，覆盖库值；不给则不压测")
+    rep_parser.add_argument("--incoterm", default="FOB", choices=("FOB", "DDP"))
+
     prof_parser = sub.add_parser(
         "fba-profile",
         help="按市场典型规格跑一遍：这些品类到底报不报得出价",
@@ -1355,6 +1545,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "transport":
         # 不碰数据库：这是纯规则判定，没有需要核实的数值参与。
         return _dump_transport(args)
+
+    if args.command == "reply":
+        if args.sku:
+            conn = connect(args.db or resolve_path(None))
+            try:
+                return _dump_reply(args, conn)
+            finally:
+                conn.close()
+        return _dump_reply(args)
 
     if args.command == "screen":
         # 同样不碰库：准入只用到传入的四个数与几个口径常数。
