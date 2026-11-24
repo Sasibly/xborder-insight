@@ -76,6 +76,28 @@ def test_repack_moves_the_sku_back_to_standard_tier(conn):
     assert before.billable_weight_oz == after.billable_weight_oz == pytest.approx(232.0)
 
 
+def test_filling_the_box_to_the_ceiling_costs_eight_cents_more(conn):
+    """18×14×8 顶满 → 体积重 232.1 oz 压过实重 232 oz，比 17×14×8 多 $0.08。
+
+    上限不是「三边 ≤18/14/8」，而是「三边 ≤18/14/8 **且体积 ≤2015.5 in³**」：
+    2016 比临界多 0.5 in³，够把体积重顶过实重，费率进一档续重。
+    给供应商的约束若只写三边，他会合理地顶满，$2.55 的收益要掉 8 分钱——
+    金额小，但它证明「贴着上限打」不是免费的，这条判断只能靠算不能靠猜。
+    """
+    c17, e17 = _fee(conn, (17.0, 14.0, 8.0), 232.0)
+    c18, e18 = _fee(conn, (18.0, 14.0, 8.0), 232.0)
+
+    assert c17.size_tiers == c18.size_tiers == ("large_standard",)
+    assert e17.low_usd == pytest.approx(11.85, abs=0.005)
+    assert e18.low_usd == pytest.approx(11.93, abs=0.005)
+    assert e18.low_usd - e17.low_usd == pytest.approx(0.08, abs=0.005)
+
+    # 差价的来源是计费重量，不是档位——档位两者相同
+    assert e17.billable_weight_oz == pytest.approx(232.0, abs=0.05)
+    assert e18.billable_weight_oz == pytest.approx(232.1, abs=0.05)
+    assert e18.billable_weight_oz > 232.0 > 231.9
+
+
 def test_price_band_is_over_50_for_the_actual_price(conn):
     _, env = _fee(conn, (16.0, 13.0, 9.5), 232.0)
     assert env.price_band == "over_50"

@@ -45,7 +45,6 @@ import csv
 import sqlite3
 import sys
 import tempfile
-import textwrap
 import unicodedata
 from dataclasses import replace
 from datetime import date
@@ -781,6 +780,44 @@ def _resolve_returns(args, conn):
     return baseline, stress, "；".join(parts), record
 
 
+#: 话术里可以在这些字符**之后**断行。中文没有词间空格，`textwrap.wrap` 只能按
+#: 字符数硬切，结果会把「（8.0」和「也算达标）」拆成两行——那段是给人复制去发的，
+#: 贴进微信就是两句半。所以断口只允许落在中文标点上。
+_BREAK_AFTER = "，。；：、！？）】》”’…"
+
+
+def _wrap_msg(text: str, width: int = 52) -> list[str]:
+    """按中文标点断行，绝不把数字和它的单位切开。
+
+    超宽的单块不硬切（交给终端软换行）：宁可一行长一点，也不要
+    「16×13×9.5 / 英寸」这种粘不回去的断口。复现见 `tests/test_reply_actions.py`
+    的 `test_cli_breaks_the_script_only_at_chinese_punctuation`。
+    """
+    lines: list[str] = []
+    cur = ""
+    chunk = ""
+    for ch in text:
+        chunk += ch
+        if ch in _BREAK_AFTER:
+            if cur and len(cur) + len(chunk) <= width:
+                cur += chunk
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = chunk
+            chunk = ""
+    if chunk:
+        if cur and len(cur) + len(chunk) <= width:
+            cur += chunk
+        else:
+            if cur:
+                lines.append(cur)
+            cur = chunk
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def _dump_reply(args, conn=None) -> int:
     """供应商回复 → 下一步动作。
 
@@ -910,12 +947,12 @@ def _dump_reply(args, conn=None) -> int:
     if res.next_message:
         print()
         print("  话术（可直接复制）：")
-        for line in textwrap.wrap(res.next_message, width=52):
+        for line in _wrap_msg(res.next_message):
             print(f"    {line}")
     if res.pending_question and res.next_message != res.pending_question:
         print()
         print("  还欠对方一句：")
-        for line in textwrap.wrap(res.pending_question, width=52):
+        for line in _wrap_msg(res.pending_question):
             print(f"    {line}")
 
     if res.action in (

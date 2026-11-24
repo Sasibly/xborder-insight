@@ -57,12 +57,25 @@ def _coffee(fba: float | None, cogs: float = 18.50, **kw) -> adm.Candidate:
 
 
 def test_box_unanswered_asks_first_and_never_quotes():
-    """箱规没答时不许出现任何价格：FBA 档位没定，报价只能是错的那一档。"""
+    """箱规没答时不许出现任何价格：FBA 档位没定，报价只能是错的那一档。
+
+    话术里同时钉住三件事，缺一句他就会给出一个「看着照做、其实没用」的答复：
+    另两边也卡住（只压高度可能把中边放到 15）、8.0 含本数、箱内容积不用缩。
+    """
     res = R.resolve(_coffee(None), R.SupplierReply())
     assert res.action == R.ACTION_REASK_BOX
     assert res.needs_external_input
     assert res.sign_price is None and res.open_price is None
-    assert res.next_message and "8英寸" in res.next_message
+    msg = res.next_message
+    assert msg
+    # ① 不只问最短边：另两边必须同时卡住，否则整单跳回小号大件
+    assert "长边不超过 18" in msg and "中边不超过 14" in msg
+    # ② 8.0 含本数——平台边界含 8.0，8.1 就掉档
+    assert "8 英寸或以下" in msg and "8.0 也算达标" in msg
+    # ③ 不说「容积不用缩」，他默认要压缩 15.8%，很可能直接答做不到
+    assert "2015" in msg
+    # ④ 一个美元数都不许有：带了就收不回来（$15.00 那次的教训）
+    assert "$" not in msg
 
 
 def test_box_unanswered_even_when_he_already_quoted():
@@ -336,6 +349,25 @@ def test_cli_does_not_print_a_price_before_the_box_is_settled(app_db_file):
     assert "数字：" not in out
     assert "签字线" not in out
     assert "$18.50" in out  # 只有他报的价，用来确认「我知道你报了，但现在不接」
+
+
+def test_cli_breaks_the_script_only_at_chinese_punctuation(app_db_file):
+    """话术是给人**复制去发**的：断口只能落在中文标点上。
+
+    `textwrap.wrap` 按字符数硬切，会把「（8.0」和「也算达标）」拆成两行；
+    贴进微信就是两句半，收件人一眼看出是机器拼的。这里钉的是断口形状，不是宽度。
+    """
+    proc = _reply(app_db_file, "--sku", "coffee_semi_1613", "--cogs", "18.50")
+    script = [
+        ln.strip()
+        for ln in proc.stdout.splitlines()
+        if ln.startswith("    ") and ln.strip()
+    ]
+    assert len(script) >= 3
+    for ln in script:
+        assert ln[-1] in "，。；：、！？）】》”,.", f"断行落在标点之外：{ln!r}"
+    # 断行之后仍是同一句话：拼回去逐字相同（一个字都没丢、没换）
+    assert "".join(script) == R.BOX_QUESTION
 
 
 def test_cli_refuses_without_a_return_rate(app_db_file):
