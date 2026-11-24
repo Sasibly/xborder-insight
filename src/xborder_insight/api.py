@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import __version__, dashboard, metrics
+from . import __version__, console, dashboard, metrics
 from .config import ROOT_DIR, settings
 from .db.connection import connect
 from .db import migrate
@@ -598,3 +598,14 @@ async def index(dataset: str = Query(default="")) -> HTMLResponse:
         top_k=6,
     )
     return HTMLResponse(dashboard.render(result.report, datasets, current))
+
+
+@app.get("/console", response_class=HTMLResponse, tags=["ui"])
+async def console_page() -> HTMLResponse:
+    """决策台：填成本档案 → 调 `/v1/decision` → 出结论。
+
+    与 `/` 的分工：`/` 回答「哪些品值得看」（只读看板），`/console` 回答
+    「这一台按我手上的成本到底做不做」（可填参数）。判定逻辑全在服务端，
+    这一页只传参与展示，所以不存在「页面算一套、接口算另一套」的风险。
+    """
+    return HTMLResponse(console.render())

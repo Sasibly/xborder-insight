@@ -421,9 +421,15 @@ python scripts/db.py up                                 # 幂等：已应用的�
 Windows 无 `make` 时直接用仓库根的 `serve.cmd`，它把上面两步串起来（先 `db.py up`，失败就拒绝启动，
 避免在半迁移的 schema 上起服务）：`serve.cmd` 默认 8000，`serve.cmd 8018` 指定端口。
 
-起来之后三个地址：`/` 是机会清单看板（渲染 `/v1/analyze` 的结果）、`/docs` 是 Swagger（不需鉴权，
+起来之后四个地址：`/` 是机会清单看板（渲染 `/v1/analyze` 的结果，只读）、`/console` 是决策台
+（填成本档案 → 调 `/v1/decision` → 出做不做，页面只传参不判定）、`/docs` 是 Swagger（不需鉴权，
 故意如此，见 §11）、`/ready` 才是「能不能接活」的判据——它回 `schema_version`、`auth`、`embedding`
 与 `cluster_threshold_source`，`/health` 只说明进程活着。
+
+决策台的字段名与 `/openapi.json` 是同一套（`tests/test_console.py` 拿契约校对，改了 schema 忘改页面会红）。
+默认预填的是净化器现行口径（$79.99 / $24.30 / 15% / $11.35 / $6.00 / 12.5%），改任一项再点「算一下」，
+结论会跟着变。缺项时页面顶部会出现「这是上界，不是结论」的黄色提示——那不是渲染瑕疵，
+是 `missing_inputs` 在起作用，别把它当成功结论截图。
 
 `RUN_MODE` 决定鉴权默认值：`mock`（默认）下 `AUTH_REQUIRED=false`、`SYNC_ANALYZE_ENABLED=true`；
 `live` 下两者反转，缺 `LLM_API_KEY` 直接启动失败。本地自测用默认值即可，**对外可达的部署必须显式

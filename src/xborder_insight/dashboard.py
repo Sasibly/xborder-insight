@@ -17,6 +17,10 @@ background:#f6f6f4;color:#1c1c1a;line-height:1.6;padding:32px 20px}
 .wrap{max-width:940px;margin:0 auto}
 h1{font-size:20px;font-weight:500;letter-spacing:.2px}
 .sub{color:#6b6b65;font-size:13px;margin-top:6px}
+.nav{display:flex;gap:18px;margin:16px 0 0;border-bottom:1px solid #e6e6e0}
+.navlink{font-size:13px;color:#8a8a82;text-decoration:none;padding:0 0 7px;
+border-bottom:2px solid transparent;margin-bottom:-1px}
+.navlink.on{color:#1c1c1a;border-bottom-color:#1c1c1a}
 .tabs{display:flex;gap:8px;margin:22px 0 18px;flex-wrap:wrap}
 .tab{padding:6px 14px;border:1px solid #dcdcd6;border-radius:999px;font-size:13px;
 color:#4a4a45;text-decoration:none;background:#fff}
@@ -77,6 +81,10 @@ def render(report: AnalysisReport, datasets: list[str], current: str) -> str:
 <body><div class="wrap">
   <h1>跨境选品决策引擎</h1>
   <div class="sub">竞品评论 → 结构化抽取 → 机会分排序。机会分 = 0.55×需求广度 + 0.35×负向占比 + 0.10×证据强度</div>
+  <div class="nav">
+    <a class="navlink on" href="/">机会清单</a>
+    <a class="navlink" href="/console">决策台</a>
+  </div>
   <div class="tabs">{tabs}</div>
   <div class="stats">
     <div class="stat"><b>{report.review_count}</b><span>评论样本</span></div>
