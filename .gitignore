@@ -9,3 +9,6 @@ reports/
 *.sqlite3
 *.sqlite3.bak-*
 data/review/
+
+# 代理的工作记忆：本地留存，不入库
+.workbuddy/
