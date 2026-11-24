@@ -147,6 +147,53 @@ def test_blocker_without_refusal_is_rejected():
         R.SupplierReply(box_fits=True, box_blocker=R.BLOCKER_TOOLING)
 
 
+# ------------------------------------------ ②′ 佣金率是同一句话的第二个变量
+
+
+def test_the_referral_rate_alone_flips_branch_b_from_drop_to_open():
+    """佣金率是敏感性变量，不是待办：H1 已于 11-23 读到 15%，这里钉的是覆盖入口。
+
+    为什么仍要钉：三条路里「佣金」最容易被误当成「还没查」而反复重推一遍。
+    实测 8% 下同一句「箱规改不了」会从先放变成开口，签字线 $13.719 → $17.325
+    （差 $3.61/件）。钉住它，是为了后台类目真改判、或换 listing 重新归类那天
+    一分钟出结论，不是为了现在再去查（查过了，就是 15%）。
+    """
+    reply = R.SupplierReply(box_fits=False, box_blocker=R.BLOCKER_CUSHION)
+    at_15 = R.resolve(_coffee(FBA_B), reply, fair_cogs=FAIR)
+    at_8 = R.resolve(_coffee(FBA_B, referral_rate=0.08), reply, fair_cogs=FAIR)
+
+    assert at_15.action == R.ACTION_DROP
+    assert at_15.sign_price == 13.70
+
+    assert at_8.action == R.ACTION_OPEN
+    assert at_8.sign_ceiling == pytest.approx(17.325, abs=1e-3)
+    assert at_8.sign_price == 17.30
+    assert at_8.open_price == 16.50
+    # 他的 $18.50 在 8% 下已经是 12.67%，离签字线只差 6.4%
+    assert at_8.need_drop_pct is None or at_8.need_drop_pct < R.NEGOTIABLE_DROP_PCT
+
+
+def test_eight_percent_plus_the_cheap_box_signs_at_his_current_price():
+    """两个杠杆同时成立时，$18.50 原价就该签——一分不用降。
+
+    单看任何一个都不够：只 8% 佣金是 12.67%，只改箱规是 9.52%，两个一起才是 **16.66%**。
+    这条是「两个都不成立时先放」的反面证据：结论对参数敏感，所以 `--referral`
+    与 FBA 档位都必须显式可覆盖，不能藏在默认值里。
+    """
+    res = R.resolve(
+        _coffee(FBA_A, referral_rate=0.08),
+        R.SupplierReply(box_fits=True, counter_price=18.50),
+        fair_cogs=FAIR,
+    )
+    assert res.action == R.ACTION_ACCEPT
+    assert res.reply_margin == pytest.approx(0.1666, abs=5e-4)
+    # 反证：同一句话在 15% 佣金下判不了「签」
+    at_15 = R.resolve(
+        _coffee(FBA_A), R.SupplierReply(box_fits=True, counter_price=18.50), fair_cogs=FAIR
+    )
+    assert at_15.action != R.ACTION_ACCEPT
+
+
 # ---------------------------------------------------------------- ③ 发开口价
 
 
@@ -421,3 +468,28 @@ def test_cli_prints_the_fifteen_percent_line_to_three_decimals(app_db_file):
     )
     assert "$13.719" in proc.stdout
     assert "签字线 $13.70" in proc.stdout
+
+
+def test_cli_prints_the_referral_rate_and_lets_it_be_overridden(app_db_file):
+    """佣金率一直有默认值——所以它必须每行都印出来，连「默认值、H1 已读到」也印。
+
+    它是唯一一个「不填也有数、但填错就少报 $3.6/件」的参数（$13.70 对 $17.30）。
+    这一行不印，读的人不会想到它可覆盖；而覆盖入口一旦失效，后台改判那天就会
+    按旧口径签字。
+    """
+    default = _reply(
+        app_db_file, "--sku", "coffee_semi_1613", "--cogs", "18.50",
+        "--box", "no", "--box-blocker", "cushion", "--fba", "14.40",
+    )
+    assert default.returncode == 1
+    assert "佣金：15%（默认值，H1 11-23 已读到 15%）" in default.stdout
+    assert "签字线 $13.70" in default.stdout
+
+    eight = _reply(
+        app_db_file, "--sku", "coffee_semi_1613", "--cogs", "18.50",
+        "--box", "no", "--box-blocker", "cushion", "--fba", "14.40",
+        "--referral", "0.08",
+    )
+    assert eight.returncode == 0
+    assert "佣金：8%（--referral 指定）" in eight.stdout
+    assert "$17.325" in eight.stdout and "签字线 $17.30" in eight.stdout

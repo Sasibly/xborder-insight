@@ -864,6 +864,9 @@ def _dump_reply(args, conn=None) -> int:
         print(f"[输入不成立] {exc}")
         return 2
 
+    referral = (
+        args.referral if args.referral is not None else admission.DEFAULT_REFERRAL
+    )
     candidate = admission.Candidate(
         name=args.name,
         selling_price=args.price,
@@ -872,6 +875,7 @@ def _dump_reply(args, conn=None) -> int:
         fba_fee=args.fba,
         inbound_freight=args.freight,
         return_rate=baseline,
+        referral_rate=referral,
         incoterm=args.incoterm,
     )
 
@@ -909,6 +913,14 @@ def _dump_reply(args, conn=None) -> int:
     origin = "--returns 指定" if args.returns is not None else ("库" if args.sku else "未给")
     tail = f"　压测 {stress:.2%}" if stress is not None else "　未压测"
     print(f"  退货率：基线 {baseline:.2%}（{origin}）{tail}")
+    # 佣金率一直有默认值，所以必须每行都印：它是唯一一个「不填也有数、
+    # 但填错就少报 $3.6/件」的参数（咖啡机 B 档 $13.70 → $17.30）。
+    ref_origin = (
+        "--referral 指定"
+        if args.referral is not None
+        else f"默认值，H1 11-23 已读到 {admission.DEFAULT_REFERRAL:.0%}"
+    )
+    print(f"  佣金：{referral:.0%}（{ref_origin}）")
     print()
     print(f"  动作：{res.label}")
 
@@ -1240,7 +1252,7 @@ def _dump_screen_batch(args) -> int:
         print("  逐台细节（含所需售价与缺什么）：去掉 --csv，按行传 --price/--cogs/--duty/--fba")
         print(
             f"  口径：佣金 {referral:.0%}｜"
-            f"{'指定' if args.referral is not None else f'默认 {admission.DEFAULT_REFERRAL:.0%}（H1 未核实）'}"
+            f"{'指定' if args.referral is not None else f'默认 {admission.DEFAULT_REFERRAL:.0%}（H1 已读到 15%）'}"
             f"　退货率 {baseline:.1%}｜"
             f"{'指定' if args.returns is not None else f'默认 {admission.DEFAULT_RETURNS:.0%}（H3 未核实）'}"
             f"　头程 ${freight:.2f}｜"
@@ -1521,6 +1533,10 @@ def main(argv: list[str] | None = None) -> int:
                             help="头程（$/件）。DDP 报价可不给；FOB 不给会拒绝判价")
     rep_parser.add_argument("--fair", type=float, default=None,
                             help="FOB 公允价（内部锚，只用于压开口价，绝不进话术）")
+    rep_parser.add_argument("--referral", type=float, default=None,
+                            help="佣金比例。不给则用 0.15（H1 11-23 13:42 已读到 15%%，Home & Kitchen）。"
+                                 "后台若读到 8%% 类目，这里必须显式给，否则签字线"
+                                 "会比实际低 $3.6/件（咖啡机 B 档 $13.719 → $17.325）")
     rep_parser.add_argument("--sku", default=None,
                             help="从 product_returns 取两档退货率（如 coffee_semi_1613）")
     rep_parser.add_argument("--returns", type=float, default=None,
