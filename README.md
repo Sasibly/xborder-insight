@@ -942,7 +942,7 @@ docker rm -f xborder && docker run -d --name xborder -p 8000:8000 \
 
 ## 简历怎么写
 
-> **跨境选品决策引擎**（个人项目 · 独立完成 · 私有仓库，面试时提供只读访问与现场复现演示）
+> **跨境选品决策引擎**（个人项目 · 独立完成 · [github.com/Sasibly/xborder-insight](https://github.com/Sasibly/xborder-insight)）
 >
 > - **背景**：跨境选品依赖人工翻阅竞品评论，痛点发现效率低、结论主观且不可复现。
 > - **方案**：设计「抽取 → 聚类 → 排序」三段式管道，用 Pydantic 契约 + 标签闭集约束 LLM 输出，实现「解析 → 错误回灌重试 → 标记降级」三级容错，将不可控的模型输出转化为可校验数据。
