@@ -408,6 +408,27 @@ python scripts/db.py up     # 建库并升到最新版本；smoke 会自建临�
 python scripts/smoke.py     # 17/17
 ```
 
+### 13.1.1 把服务跑起来
+
+前三条命令只证明「能验」，不启动任何长驻进程。要真正对外提供接口，**先确认 `data/app.sqlite3` 已升到最新**
+（`serve` 读真库，不读临时库），再起 uvicorn：
+
+```bash
+python scripts/db.py up                                 # 幂等：已应用的迁移会跳过
+./.venv/Scripts/python.exe -m uvicorn xborder_insight.api:app --app-dir src --port 8018
+```
+
+Windows 无 `make` 时直接用仓库根的 `serve.cmd`，它把上面两步串起来（先 `db.py up`，失败就拒绝启动，
+避免在半迁移的 schema 上起服务）：`serve.cmd` 默认 8000，`serve.cmd 8018` 指定端口。
+
+起来之后三个地址：`/` 是机会清单看板（渲染 `/v1/analyze` 的结果）、`/docs` 是 Swagger（不需鉴权，
+故意如此，见 §11）、`/ready` 才是「能不能接活」的判据——它回 `schema_version`、`auth`、`embedding`
+与 `cluster_threshold_source`，`/health` 只说明进程活着。
+
+`RUN_MODE` 决定鉴权默认值：`mock`（默认）下 `AUTH_REQUIRED=false`、`SYNC_ANALYZE_ENABLED=true`；
+`live` 下两者反转，缺 `LLM_API_KEY` 直接启动失败。本地自测用默认值即可，**对外可达的部署必须显式
+`AUTH_REQUIRED=true`**（§2、§6）。
+
 ### 13.2 2026-11-23 实测记录（`git clone` 到空目录 + 全新 venv；当时 v13）
 
 | 环节 | 结果 |
