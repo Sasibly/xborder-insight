@@ -222,3 +222,157 @@ def test_the_void_box_would_have_flipped_the_conclusion(conn):
     assert _margin(current.high_usd, 24.00) == pytest.approx(0.1549, abs=5e-4)
     assert _margin(void_fee, 24.00) < 0.0
     assert _margin(current.high_usd, 24.00) - _margin(void_fee, 24.00) > 0.15
+
+
+# ------------------------------------------------------- 208 oz 档顶：真正的硬线
+
+
+def test_the_real_hard_line_is_1807_cubic_inches_not_the_three_edges(conn):
+    """$11.35 的档顶是计费重量 208 oz，对应体积 **1807 in³**。
+
+    样品 1805.9 in³，余量 **1.1 in³**——不是「三边各还有 0.48/0.22/0.52 英寸」那种余量，
+    是「任何方向涨 0.005 英寸就到线」。所以 PI 里该锁的是体积，不是三边分列：
+    三条边各写一个上限，读的人会以为三个方向各有各的余量，实际它们共享这 1.1。
+    """
+    _, sample = _package(conn, CURRENT_DIMS)
+    assert sample.billable_weight_oz == pytest.approx(207.9, abs=0.2)
+    assert sample.high_usd == pytest.approx(11.35, abs=0.005)
+
+    # 高度只加 0.01 英寸（一个纸板厚度的量级）就跳档
+    _, nudge = _package(conn, (17.52, 13.78, 7.49))
+    assert nudge.billable_weight_oz / 16 > 13.0
+    assert nudge.high_usd == pytest.approx(11.44, abs=0.005)
+
+    # 208 oz 是那条线：体积 1807.0 = 208 ÷ 16 × 139
+    assert 208 / 16 * 139 == pytest.approx(1807.0, abs=0.5)
+    assert CURRENT_DIMS[0] * CURRENT_DIMS[1] * CURRENT_DIMS[2] < 208 / 16 * 139
+
+
+def test_a_14_lb_dim_weight_clause_would_give_away_34_cents(conn):
+    """「体积重不超过 14 磅」在 ① 成立时是死条款，单独生效时让掉 $0.34/件。
+
+    ① 把三边锁在 17.5×13.7×7.5 时体积最大 1798.1 in³ = 12.94 lb，永远够不到 14 lb；
+    可一旦三边放开、只留这条，14 lb = 1946 in³，比样品宽 140 in³，实测 $11.69。
+    一条永远为真、单独为真时又亏钱的约束，写进合同只是让争议时有话说。
+    """
+    cap_volume = NEGOTIATION_TARGET_DIMS[0] * NEGOTIATION_TARGET_DIMS[1] * NEGOTIATION_TARGET_DIMS[2]
+    assert cap_volume / 139 == pytest.approx(12.94, abs=0.01), "① 成立时到不了 14 lb"
+
+    # 14 lb 体积重对应的实际形状：长边放到 18、高度放到 7.84（三边仍在 18×14×8 内）
+    wide = (18.0, 13.78, 7.84)
+    assert wide[0] * wide[1] * wide[2] / 139 == pytest.approx(13.99, abs=0.02)
+    assert pkg.standard_edge_violation(wide) is None, "它仍在大号标准件里"
+
+    klass, env = _package(conn, wide)
+    assert klass.size_tiers == ("large_standard",)
+    assert env.high_usd == pytest.approx(11.69, abs=0.005)
+    assert env.high_usd - 11.35 == pytest.approx(0.34, abs=0.01)
+
+
+def test_a_010_inch_tolerance_is_not_free_at_the_band_ceiling(conn):
+    """「任一边超出 0.1 英寸以上才书面告知」——在档顶，0.1 英寸是 $0.17/件。
+
+    而且在 208 oz 这条线上，0.01 英寸就已经跳档（上一条用例）。所以容差写 0.1
+    不是「留一点余地」，是把 $0.17 白送出去；条款要么不给容差，要么写明由供方承担。
+    """
+    tol = (17.6, 13.88, 7.55)
+    assert tol[0] * tol[1] * tol[2] == pytest.approx(1844.4, abs=0.5)
+
+    _, sample = _package(conn, CURRENT_DIMS)
+    klass, env = _package(conn, tol)
+    assert klass.size_tiers == ("large_standard",)
+    assert env.high_usd == pytest.approx(11.52, abs=0.005)
+    assert env.high_usd - sample.high_usd == pytest.approx(0.17, abs=0.01)
+
+
+def test_the_2_65_penalty_belongs_to_1401_not_to_a_01_inch_drift(conn):
+    """$2.65 是「次长边超过 14.00」的价钱，不是「任一边超 0.1 英寸」的价钱。
+
+    条款把两件事绑成一句（「超 0.1 英寸……差额费用（$2.65/件）由卖方承担」），
+    后果是主张时被算据打回：0.1 英寸漂移实测 $0.17，只有 14.00→14.01 才是 $2.65。
+    两种违约要分两条写，各自的金额才站得住。
+    """
+    _, drift = _package(conn, (17.6, 13.88, 7.55))          # 三边各 +0.1
+    assert drift.high_usd == pytest.approx(11.52, abs=0.005)
+    assert drift.high_usd - 11.35 == pytest.approx(0.17, abs=0.01)
+
+    _, cliff = _package(conn, (17.52, 14.01, 7.48))          # 次长边过 14.00
+    assert cliff.high_usd == pytest.approx(14.00, abs=0.01)
+    assert cliff.high_usd - 11.35 == pytest.approx(2.65, abs=0.01)
+
+
+# ------------------------------------------------------- 208 oz 档顶：真正的硬线
+
+
+def test_the_real_hard_line_is_1807_cubic_inches_not_the_three_edges(conn):
+    """$11.35 的档顶是计费重量 208 oz，对应体积 **1807 in³**。
+
+    样品 1805.9 in³，余量 **1.1 in³**——不是「三边各还有 0.48/0.22/0.52 英寸」那种余量，
+    是「任何方向涨 0.005 英寸就到线」。所以 PI 里该锁的是体积，不是三边分列：
+    三条边各写一个上限，读的人会以为三个方向各有各的余量，实际它们共享这 1.1。
+    """
+    _, sample = _package(conn, CURRENT_DIMS)
+    assert sample.billable_weight_oz == pytest.approx(207.9, abs=0.2)
+    assert sample.high_usd == pytest.approx(11.35, abs=0.005)
+
+    # 高度只加 0.01 英寸（一个纸板厚度的量级）就跳档
+    _, nudge = _package(conn, (17.52, 13.78, 7.49))
+    assert nudge.billable_weight_oz / 16 > 13.0
+    assert nudge.high_usd == pytest.approx(11.44, abs=0.005)
+
+    # 208 oz 是那条线：体积 1807.0 = 208 ÷ 16 × 139
+    assert 208 / 16 * 139 == pytest.approx(1807.0, abs=0.5)
+    assert CURRENT_DIMS[0] * CURRENT_DIMS[1] * CURRENT_DIMS[2] < 208 / 16 * 139
+
+
+def test_a_14_lb_dim_weight_clause_would_give_away_34_cents(conn):
+    """「体积重不超过 14 磅」在 ① 成立时是死条款，单独生效时让掉 $0.34/件。
+
+    ① 把三边锁在 17.5×13.7×7.5 时体积最大 1798.1 in³ = 12.94 lb，永远够不到 14 lb；
+    可一旦三边放开、只留这条，14 lb = 1946 in³，比样品宽 140 in³，实测 $11.69。
+    一条永远为真、单独为真时又亏钱的约束，写进合同只是让争议时有话说。
+    """
+    cap_volume = NEGOTIATION_TARGET_DIMS[0] * NEGOTIATION_TARGET_DIMS[1] * NEGOTIATION_TARGET_DIMS[2]
+    assert cap_volume / 139 == pytest.approx(12.94, abs=0.01), "① 成立时到不了 14 lb"
+
+    # 14 lb 体积重对应的实际形状：长边放到 18、高度放到 7.84（三边仍在 18×14×8 内）
+    wide = (18.0, 13.78, 7.84)
+    assert wide[0] * wide[1] * wide[2] / 139 == pytest.approx(13.99, abs=0.02)
+    assert pkg.standard_edge_violation(wide) is None, "它仍在大号标准件里"
+
+    klass, env = _package(conn, wide)
+    assert klass.size_tiers == ("large_standard",)
+    assert env.high_usd == pytest.approx(11.69, abs=0.005)
+    assert env.high_usd - 11.35 == pytest.approx(0.34, abs=0.01)
+
+
+def test_a_010_inch_tolerance_is_not_free_at_the_band_ceiling(conn):
+    """「任一边超出 0.1 英寸以上才书面告知」——在档顶，0.1 英寸是 $0.17/件。
+
+    而且在 208 oz 这条线上，0.01 英寸就已经跳档（上一条用例）。所以容差写 0.1
+    不是「留一点余地」，是把 $0.17 白送出去；条款要么不给容差，要么写明由供方承担。
+    """
+    tol = (17.6, 13.88, 7.55)
+    assert tol[0] * tol[1] * tol[2] == pytest.approx(1844.4, abs=0.5)
+
+    _, sample = _package(conn, CURRENT_DIMS)
+    klass, env = _package(conn, tol)
+    assert klass.size_tiers == ("large_standard",)
+    assert env.high_usd == pytest.approx(11.52, abs=0.005)
+    assert env.high_usd - sample.high_usd == pytest.approx(0.17, abs=0.01)
+
+
+def test_the_2_65_penalty_belongs_to_1401_not_to_a_01_inch_drift(conn):
+    """$2.65 是「次长边超过 14.00」的价钱，不是「任一边超 0.1 英寸」的价钱。
+
+    条款把两件事绑成一句（「超 0.1 英寸……差额费用（$2.65/件）由卖方承担」），
+    后果是主张时被算据打回：0.1 英寸漂移实测 $0.17，只有 14.00→14.01 才是 $2.65。
+    两种违约要分两条写，各自的金额才站得住。
+    """
+    _, drift = _package(conn, (17.6, 13.88, 7.55))          # 三边各 +0.1
+    assert drift.high_usd == pytest.approx(11.52, abs=0.005)
+    assert drift.high_usd - 11.35 == pytest.approx(0.17, abs=0.01)
+
+    _, cliff = _package(conn, (17.52, 14.01, 7.48))          # 次长边过 14.00
+    assert cliff.high_usd == pytest.approx(14.00, abs=0.01)
+    assert cliff.high_usd - 11.35 == pytest.approx(2.65, abs=0.01)
